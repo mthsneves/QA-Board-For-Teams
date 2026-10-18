@@ -31,7 +31,6 @@ type ActiveSection = 'bugs' | 'testcases' | 'runs' | 'reports' | 'settings';
 interface NavItem {
   id: ActiveSection;
   label: string;
-  phase: string;
   description: string;
   icon: typeof Bug;
 }
@@ -40,7 +39,6 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: 'bugs',
     label: 'Board de Bugs',
-    phase: 'Ativo',
     description:
       'Kanban com colunas editáveis, severidade, anexos com Ctrl+V, filtros e backup completo.',
     icon: Bug,
@@ -48,7 +46,6 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: 'testcases',
     label: 'Casos de Teste',
-    phase: 'Ativo',
     description:
       'Biblioteca de casos de teste, pré-condições, passos e checklists reutilizáveis (smoke/regressão).',
     icon: ClipboardCheck,
@@ -56,7 +53,6 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: 'runs',
     label: 'Execuções (Test Runs)',
-    phase: 'Ativo',
     description:
       'Execução por build/ambiente, criação rápida de bug a partir de falha e sessões exploratórias com timer.',
     icon: PlayCircle,
@@ -64,7 +60,6 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: 'reports',
     label: 'Produtividade & Relatórios',
-    phase: 'Ativo',
     description:
       'Templates para Jira/Azure DevOps/Markdown, captura rápida global, dashboard, exportação PDF/MD e massa de dados.',
     icon: BarChart3,
@@ -72,7 +67,6 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: 'settings',
     label: 'Configurações & Integrações',
-    phase: 'Ativo',
     description:
       'Integração segura via Rust + cofre do sistema (keyring) com Jira, Azure DevOps e Slack.',
     icon: Settings,
@@ -260,17 +254,6 @@ export default function App() {
                   <span className="flex items-center gap-2.5">
                     <Icon className="h-4 w-4 shrink-0" />
                     <span className="truncate">{item.label}</span>
-                  </span>
-                  <span
-                    className={`text-[10px] px-1.5 py-0.5 rounded font-semibold shrink-0 ${
-                      isActive
-                        ? 'bg-indigo-500 text-white'
-                        : isLight
-                          ? 'bg-slate-100 text-slate-500'
-                          : 'bg-slate-800 text-slate-400'
-                    }`}
-                  >
-                    {item.phase}
                   </span>
                 </button>
               );
