@@ -25,3 +25,12 @@ Este documento registra as decisões tomadas ao longo do desenvolvimento do **QA
    - O pacote `.zip` exportado pelo Rust contém o `backup.json` (com versão de schema, preferências, colunas, bugs e metadados de anexos) na raiz e todos os arquivos binários dentro de `attachments/`. Na importação, o JSON e os caminhos são validados antes de qualquer extração.
 4. **Rastreamento Automático de Reabertura de Bugs (`reopened_count`)**:
    - Quando um bug sai da coluna final (`Fechado`) de volta para qualquer coluna ativa (ex.: `Reteste`), o contador `reopened_count` é incrementado automaticamente para alimentar os indicadores de regressão do Dashboard na Fase 3.
+
+## Fase 2 — Casos de Teste e Execuções
+
+1. **Snapshot dos Casos nos Itens de Execução (`test_run_items`)**:
+   - Ao iniciar um `Test Run`, cada item copia o título, módulo, prioridade, pré-condições, passos e resultado esperado do caso de teste naquele instante. Isso preserva o histórico fiel da execução mesmo que o caso de teste seja editado ou excluído futuramente na biblioteca.
+2. **Templates/Checklists Padrão Pré-carregados (`Smoke`, `Regressão`, `Pré-Release`)**:
+   - O banco inicializa automaticamente os três templates clássicos de QA e permite associar casos tanto pela tela do caso de teste quanto pela tela do checklist.
+3. **Geração de Bug com Cópia de Evidências**:
+   - Quando o analista clica em **"Gerar Bug a partir de Falha"** em um item de execução, o sistema cria o card na primeira coluna do Kanban já preenchido com `build_version`, `environment`, `steps_to_reproduce`, `expected_result` e `actual_result` (observação da falha), copia os anexos daquele item para o card do bug e grava a referência cruzada (`created_bug_id` e `test_run_item_id`).

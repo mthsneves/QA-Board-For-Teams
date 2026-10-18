@@ -13,6 +13,8 @@ import {
 import { ThemeMode } from './types/models';
 import { getThemePreference, setThemePreference } from './db/database';
 import { BugsBoardView } from './features/bugs';
+import { TestCasesView } from './features/testcases';
+import { TestRunsView } from './features/runs';
 
 type ActiveSection = 'bugs' | 'testcases' | 'runs' | 'reports' | 'settings';
 
@@ -36,7 +38,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: 'testcases',
     label: 'Casos de Teste',
-    phase: 'Fase 2',
+    phase: 'Ativo',
     description:
       'Biblioteca de casos de teste, pré-condições, passos e checklists reutilizáveis (smoke/regressão).',
     icon: ClipboardCheck,
@@ -44,7 +46,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: 'runs',
     label: 'Execuções (Test Runs)',
-    phase: 'Fase 2',
+    phase: 'Ativo',
     description:
       'Execução por build/ambiente, criação rápida de bug a partir de falha e sessões exploratórias com timer.',
     icon: PlayCircle,
@@ -207,7 +209,7 @@ export default function App() {
               <Layers className="h-3.5 w-3.5 text-indigo-500" />
               <span>Status do Projeto</span>
             </div>
-            <p>Fase 1 (MVP) ativa: Kanban de bugs, anexos Ctrl+V, filtros, backup e temas.</p>
+            <p>Fase 2 ativa: Casos de Teste, Checklists, Test Runs e Sessões Exploratórias.</p>
           </div>
         </aside>
 
@@ -215,6 +217,10 @@ export default function App() {
         <main className="flex-1 p-6 overflow-y-auto">
           {activeSection === 'bugs' ? (
             <BugsBoardView theme={theme} onThemeRestored={setTheme} />
+          ) : activeSection === 'testcases' ? (
+            <TestCasesView theme={theme} />
+          ) : activeSection === 'runs' ? (
+            <TestRunsView theme={theme} onNavigateToBugs={() => setActiveSection('bugs')} />
           ) : (
             <div className="max-w-3xl mx-auto">
               <div
