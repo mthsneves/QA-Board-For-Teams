@@ -20,6 +20,7 @@ pub fn run() {
             storage::delete_attachment,
             storage::export_backup_zip,
             storage::import_backup_zip,
+            storage::save_export_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running QA Board application");

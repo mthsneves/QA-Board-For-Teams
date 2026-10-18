@@ -5,6 +5,9 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:window:allow-set-focus",
+    "core:window:allow-show",
+    "core:window:allow-unminimize",
     "sql:default",
     "sql:allow-load",
     "sql:allow-execute",
@@ -13,6 +16,10 @@
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",
-    "fs:default"
+    "fs:default",
+    "global-shortcut:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered"
   ]
 }

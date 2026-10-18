@@ -317,6 +317,16 @@ pub fn import_backup_zip(app: AppHandle, source_path: String) -> Result<String, 
     import_backup_zip_to_dir(&base_dir, Path::new(&source_path))
 }
 
+#[tauri::command]
+pub fn save_export_file(destination_path: String, bytes_base64: String) -> Result<(), String> {
+    let bytes = BASE64
+        .decode(bytes_base64.trim())
+        .map_err(|e| format!("Dados de exportação inválidos: {e}"))?;
+    fs::write(Path::new(&destination_path), &bytes)
+        .map_err(|e| format!("Falha ao salvar arquivo exportado: {e}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

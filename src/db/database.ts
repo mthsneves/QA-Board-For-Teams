@@ -17,6 +17,9 @@ import {
   DEFAULT_BOARD_COLUMNS,
   ExploratorySession,
   ExploratorySessionInput,
+  SnippetCategory,
+  SnippetInput,
+  SnippetItem,
   TestCase,
   TestCaseInput,
   TestRun,
@@ -25,6 +28,10 @@ import {
   TestRunItemStatus,
   ThemeMode,
 } from '../types/models';
+import {
+  formatTestRunMarkdownReport,
+  generateTestRunPdfBytes,
+} from '../features/reports/productivityUtils';
 
 const DB_URL = 'sqlite:qaboard.db';
 
@@ -61,6 +68,40 @@ export const DEFAULT_CHECKLISTS_SEED: Array<
   },
 ];
 
+export const DEFAULT_SNIPPETS_SEED: Array<
+  Pick<SnippetItem, 'id' | 'title' | 'category' | 'content'>
+> = [
+  {
+    id: 'snip-json-checkout',
+    title: 'Payload JSON - Criação de Pedido (Checkout)',
+    category: 'Payload JSON',
+    content: JSON.stringify(
+      {
+        customer_id: 'usr_98412',
+        payment_method: 'pix',
+        items: [{ sku: 'PROD-001', quantity: 2, unit_price: 149.9 }],
+        coupon_code: 'QA10OFF',
+      },
+      null,
+      2,
+    ),
+  },
+  {
+    id: 'snip-sql-orders',
+    title: 'Query SQL - Consultar Últimos Pedidos por Status',
+    category: 'Query SQL',
+    content:
+      "SELECT id, customer_id, status, total_amount, created_at\nFROM orders\nWHERE status IN ('PENDING', 'FAILED')\nORDER BY created_at DESC\nLIMIT 25;",
+  },
+  {
+    id: 'snip-curl-auth',
+    title: 'cURL - Autenticação OAuth / Token de Homologação',
+    category: 'Script / cURL',
+    content:
+      'curl -X POST "https://api-hml.exemplo.local/v1/auth/token" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"grant_type":"client_credentials","scope":"qa:read qa:write"}\'',
+  },
+];
+
 // ============================================================================
 // In-Memory Fallback Store (Used for Vitest and non-Tauri browser preview)
 // ============================================================================
@@ -73,6 +114,7 @@ interface MemoryStore {
   testRuns: TestRun[];
   testRunItems: TestRunItem[];
   exploratorySessions: ExploratorySession[];
+  snippets: SnippetItem[];
   preferences: Record<string, string>;
 }
 
@@ -95,7 +137,15 @@ function createInitialMemoryStore(): MemoryStore {
     testRuns: [],
     testRunItems: [],
     exploratorySessions: [],
-    preferences: { theme: 'dark' },
+    snippets: DEFAULT_SNIPPETS_SEED.map((s) => ({
+      ...s,
+      created_at: now,
+      updated_at: now,
+    })),
+    preferences: {
+      theme: 'dark',
+      quick_capture_shortcut: 'CommandOrControl+Shift+B',
+    },
   };
 }
 
@@ -154,7 +204,7 @@ async function getSqliteDb(): Promise<Database> {
         }
       }
 
-      // Seed default reusable checklists (Smoke, Regressão, Pré-Release) if checklists is empty
+      // Seed default reusable checklists if checklists is empty
       const existingChecklists = await db.select<Array<{ count: number }>>(
         'SELECT COUNT(*) as count FROM checklists',
       );
@@ -169,6 +219,21 @@ async function getSqliteDb(): Promise<Database> {
         }
       }
 
+      // Seed default snippets if snippets is empty
+      const existingSnippets = await db.select<Array<{ count: number }>>(
+        'SELECT COUNT(*) as count FROM snippets',
+      );
+      const snipCount = Number(existingSnippets[0]?.count ?? 0);
+      if (snipCount === 0) {
+        const now = new Date().toISOString();
+        for (const s of DEFAULT_SNIPPETS_SEED) {
+          await db.execute(
+            'INSERT INTO snippets (id, title, category, content, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)',
+            [s.id, s.title, s.category, s.content, now, now],
+          );
+        }
+      }
+
       return db;
     })();
   }
@@ -176,7 +241,7 @@ async function getSqliteDb(): Promise<Database> {
 }
 
 // ============================================================================
-// Preferences (Dark/Light Mode)
+// Preferences (Dark/Light Mode & Global Quick Capture Shortcut)
 // ============================================================================
 export async function getThemePreference(): Promise<ThemeMode> {
   if (!isTauriRuntime()) {
@@ -200,6 +265,31 @@ export async function setThemePreference(theme: ThemeMode): Promise<void> {
   await db.execute(
     'INSERT INTO app_preferences (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     ['theme', theme],
+  );
+}
+
+export async function getQuickCaptureShortcut(): Promise<string> {
+  if (!isTauriRuntime()) {
+    return memoryStore.preferences.quick_capture_shortcut || 'CommandOrControl+Shift+B';
+  }
+  const db = await getSqliteDb();
+  const rows = await db.select<Array<{ value: string }>>(
+    'SELECT value FROM app_preferences WHERE key = $1',
+    ['quick_capture_shortcut'],
+  );
+  return rows[0]?.value || 'CommandOrControl+Shift+B';
+}
+
+export async function setQuickCaptureShortcut(shortcut: string): Promise<void> {
+  const cleaned = shortcut.trim() || 'CommandOrControl+Shift+B';
+  if (!isTauriRuntime()) {
+    memoryStore.preferences.quick_capture_shortcut = cleaned;
+    return;
+  }
+  const db = await getSqliteDb();
+  await db.execute(
+    'INSERT INTO app_preferences (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    ['quick_capture_shortcut', cleaned],
   );
 }
 
@@ -1164,10 +1254,6 @@ export async function deleteTestRun(runId: string): Promise<void> {
   await db.execute('DELETE FROM test_runs WHERE id = $1', [runId]);
 }
 
-/**
- * Generates a Bug card pre-filled with the TestRun and TestRunItem data,
- * copies any attachments from the failed run item to the new bug, and links the bug ID.
- */
 export async function generateBugFromRunItem(
   run: TestRun,
   item: TestRunItem,
@@ -1201,7 +1287,6 @@ export async function generateBugFromRunItem(
     test_run_item_id: item.id,
   });
 
-  // Copy attachments from the run item to the newly created bug
   const itemAtts = await listAttachmentsForParent('run_item', item.id);
   for (const att of itemAtts) {
     try {
@@ -1225,7 +1310,7 @@ export async function generateBugFromRunItem(
 }
 
 // ============================================================================
-// Phase 2: Exploratory Testing Sessions (Charter, Timer, Quick Notes, Session Bugs)
+// Phase 2: Exploratory Testing Sessions
 // ============================================================================
 export async function listExploratorySessions(): Promise<ExploratorySession[]> {
   if (!isTauriRuntime()) {
@@ -1344,6 +1429,116 @@ export async function deleteExploratorySession(sessionId: string): Promise<void>
   }
   const db = await getSqliteDb();
   await db.execute('DELETE FROM exploratory_sessions WHERE id = $1', [sessionId]);
+}
+
+// ============================================================================
+// Phase 3: Snippets & Test Data Library + Test Run Report Export (MD / PDF)
+// ============================================================================
+export async function listSnippets(): Promise<SnippetItem[]> {
+  if (!isTauriRuntime()) {
+    return [...memoryStore.snippets];
+  }
+  const db = await getSqliteDb();
+  const rows = await db.select<SnippetItem[]>('SELECT * FROM snippets ORDER BY created_at DESC');
+  return rows.map((r) => ({
+    ...r,
+    category: (r.category as SnippetCategory) || 'Payload JSON',
+  }));
+}
+
+export async function createSnippet(input: SnippetInput): Promise<SnippetItem> {
+  const title = input.title.trim();
+  if (!title) {
+    throw new Error('O título do snippet é obrigatório.');
+  }
+  const now = new Date().toISOString();
+  const item: SnippetItem = {
+    id: createId('snip'),
+    title,
+    category: input.category,
+    content: input.content,
+    created_at: now,
+    updated_at: now,
+  };
+
+  if (!isTauriRuntime()) {
+    memoryStore.snippets.unshift(item);
+    return item;
+  }
+
+  const db = await getSqliteDb();
+  await db.execute(
+    'INSERT INTO snippets (id, title, category, content, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)',
+    [item.id, item.title, item.category, item.content, item.created_at, item.updated_at],
+  );
+  return item;
+}
+
+export async function deleteSnippet(snippetId: string): Promise<void> {
+  if (!isTauriRuntime()) {
+    memoryStore.snippets = memoryStore.snippets.filter((s) => s.id !== snippetId);
+    return;
+  }
+  const db = await getSqliteDb();
+  await db.execute('DELETE FROM snippets WHERE id = $1', [snippetId]);
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+export async function exportTestRunReportDialog(
+  run: TestRun,
+  items: TestRunItem[],
+  format: 'md' | 'pdf',
+): Promise<string | null> {
+  const safeSlug =
+    run.name
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]+/g, '-')
+      .replace(/^-|-$/g, '') || 'test-run';
+
+  if (format === 'md') {
+    const mdContent = formatTestRunMarkdownReport(run, items);
+    if (!isTauriRuntime()) {
+      return mdContent;
+    }
+    const targetPath = await save({
+      title: 'Exportar Relatório de Execução (Markdown)',
+      defaultPath: `relatorio-${safeSlug}.md`,
+      filters: [{ name: 'Markdown (.md)', extensions: ['md'] }],
+    });
+    if (!targetPath) return null;
+
+    const bytes = new TextEncoder().encode(mdContent);
+    await invoke('save_export_file', {
+      destinationPath: targetPath,
+      bytesBase64: uint8ArrayToBase64(bytes),
+    });
+    return targetPath;
+  }
+
+  // format === 'pdf'
+  const pdfBytes = generateTestRunPdfBytes(run, items);
+  if (!isTauriRuntime()) {
+    return new TextDecoder().decode(pdfBytes);
+  }
+  const targetPath = await save({
+    title: 'Exportar Relatório de Execução (PDF)',
+    defaultPath: `relatorio-${safeSlug}.pdf`,
+    filters: [{ name: 'Documento PDF (.pdf)', extensions: ['pdf'] }],
+  });
+  if (!targetPath) return null;
+
+  await invoke('save_export_file', {
+    destinationPath: targetPath,
+    bytesBase64: uint8ArrayToBase64(pdfBytes),
+  });
+  return targetPath;
 }
 
 // ============================================================================
@@ -1520,6 +1715,7 @@ export function validateBackupPayload(data: unknown): BackupPayload {
     exploratory_sessions: Array.isArray(candidate.exploratory_sessions)
       ? candidate.exploratory_sessions
       : [],
+    snippets: Array.isArray(candidate.snippets) ? candidate.snippets : [],
   };
 }
 
@@ -1534,6 +1730,7 @@ export async function buildBackupPayload(): Promise<BackupPayload> {
     test_runs,
     test_run_items,
     exploratory_sessions,
+    snippets,
   ] = await Promise.all([
     getThemePreference(),
     listColumns(),
@@ -1544,10 +1741,11 @@ export async function buildBackupPayload(): Promise<BackupPayload> {
     listTestRuns(),
     listAllTestRunItems(),
     listExploratorySessions(),
+    listSnippets(),
   ]);
 
   return {
-    version: 2,
+    version: 3,
     exported_at: new Date().toISOString(),
     theme,
     columns,
@@ -1558,6 +1756,7 @@ export async function buildBackupPayload(): Promise<BackupPayload> {
     test_runs,
     test_run_items,
     exploratory_sessions,
+    snippets,
   };
 }
 
@@ -1588,13 +1787,26 @@ export async function restoreFromBackupPayload(payload: BackupPayload): Promise<
       testRuns: (validated.test_runs || []).map((r) => ({ ...r })),
       testRunItems: (validated.test_run_items || []).map((i) => ({ ...i })),
       exploratorySessions: (validated.exploratory_sessions || []).map((s) => ({ ...s })),
-      preferences: { theme: validated.theme },
+      snippets:
+        validated.snippets && validated.snippets.length > 0
+          ? validated.snippets.map((s) => ({ ...s }))
+          : DEFAULT_SNIPPETS_SEED.map((s) => ({
+              ...s,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })),
+      preferences: {
+        theme: validated.theme,
+        quick_capture_shortcut:
+          memoryStore.preferences.quick_capture_shortcut || 'CommandOrControl+Shift+B',
+      },
     };
     return;
   }
 
   const db = await getSqliteDb();
   await db.execute('DELETE FROM attachments');
+  await db.execute('DELETE FROM snippets');
   await db.execute('DELETE FROM test_run_items');
   await db.execute('DELETE FROM test_runs');
   await db.execute('DELETE FROM checklists');
@@ -1744,6 +1956,15 @@ export async function restoreFromBackupPayload(payload: BackupPayload): Promise<
         session.created_at,
         session.updated_at,
       ],
+    );
+  }
+
+  for (const snip of validated.snippets || []) {
+    await db.execute(
+      `INSERT INTO snippets (
+        id, title, category, content, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [snip.id, snip.title, snip.category, snip.content, snip.created_at, snip.updated_at],
     );
   }
 

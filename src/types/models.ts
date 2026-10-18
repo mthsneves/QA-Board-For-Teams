@@ -190,7 +190,34 @@ export interface BackupPayload {
   test_runs?: TestRun[];
   test_run_items?: TestRunItem[];
   exploratory_sessions?: ExploratorySession[];
+  snippets?: SnippetItem[];
 }
+
+export type BugReportFormat = 'markdown' | 'jira' | 'azure_devops';
+
+export type SnippetCategory = 'Payload JSON' | 'Query SQL' | 'Massa de Dados' | 'Script / cURL';
+
+export interface SnippetItem {
+  id: string;
+  title: string;
+  category: SnippetCategory;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SnippetInput {
+  title: string;
+  category: SnippetCategory;
+  content: string;
+}
+
+export const SNIPPET_CATEGORIES: SnippetCategory[] = [
+  'Payload JSON',
+  'Query SQL',
+  'Massa de Dados',
+  'Script / cURL',
+];
 
 export const DEFAULT_BOARD_COLUMNS: Array<
   Pick<BoardColumn, 'id' | 'name' | 'position' | 'is_done_column'>
