@@ -8,15 +8,27 @@ pnpm-debug.log*
 lerna-debug.log*
 
 # Dependencies & Build Outputs
-node_modules
-dist
-dist-ssr
+node_modules/
+dist/
+dist-ssr/
 *.local
-coverage
+coverage/
+.vite/
 
-# Tauri & Rust
-src-tauri/target
-src-tauri/gen/schemas
+# Tauri & Rust Build Artifacts
+src-tauri/target/
+src-tauri/gen/
+src-tauri/WixTools/
+src-tauri/nsis/
+
+# Binaries & Installers
+*.exe
+*.msi
+*.app
+*.dmg
+*.deb
+*.rpm
+*.AppImage
 
 # Environment & Secrets (Never commit credentials)
 .env
@@ -25,20 +37,23 @@ src-tauri/gen/schemas
 *.key
 secrets.*
 
-# Local Databases & Backups
+# Local Databases, Backups & Local Test Seed Data
 *.db
 *.db-shm
 *.db-wal
 *.sqlite
 *.sqlite3
+*.zip
 massa-*.zip
 test-data/
-*.exe
+scripts/gerar-massa.mjs
+scripts/mock-servidor.mjs
+docs/TESTES.md
 
-# Editor directories and files
+# Editor & OS directories and files
 .vscode/*
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
 *.suo
 *.ntvs*
@@ -46,3 +61,4 @@ test-data/
 *.sln
 *.sw?
 Thumbs.db
+Desktop.ini
