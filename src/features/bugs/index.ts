@@ -1,2 +1,5 @@
-// Feature module: Bug Kanban Board & Bug Cards (Phase 1)
-export const BUGS_FEATURE_ID = 'bugs';
+export { BugsBoardView } from './BugsBoardView';
+export { BugModal } from './BugModal';
+export { KanbanColumn } from './KanbanColumn';
+export { KanbanCard } from './KanbanCard';
+export { BugFiltersBar } from './BugFiltersBar';
