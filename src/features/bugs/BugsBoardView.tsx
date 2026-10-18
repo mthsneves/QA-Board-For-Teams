@@ -16,6 +16,7 @@ import {
   CheckCircle2,
   AlertCircle,
   RefreshCw,
+  Trash2,
 } from 'lucide-react';
 import {
   BoardColumn,
@@ -74,6 +75,7 @@ export function BugsBoardView({ theme, onThemeRestored }: BugsBoardViewProps) {
   const [isBugModalOpen, setIsBugModalOpen] = useState(false);
   const [modalInitialColumnId, setModalInitialColumnId] = useState<string | undefined>();
   const [editingBug, setEditingBug] = useState<BugCard | null>(null);
+  const [bugPendingDelete, setBugPendingDelete] = useState<BugCard | null>(null);
 
   const [isAddingColumn, setIsAddingColumn] = useState(false);
   const [newColumnName, setNewColumnName] = useState('');
@@ -155,8 +157,17 @@ export function BugsBoardView({ theme, onThemeRestored }: BugsBoardViewProps) {
     await reloadBoard();
   };
 
-  const handleDeleteBug = async (bugId: string) => {
-    await deleteBug(bugId);
+  const handleRequestDeleteBug = async (bugId: string) => {
+    const target = bugs.find((b) => b.id === bugId) || editingBug;
+    if (target) {
+      setBugPendingDelete(target);
+    }
+  };
+
+  const handleConfirmDeleteBug = async () => {
+    if (!bugPendingDelete) return;
+    await deleteBug(bugPendingDelete.id);
+    setBugPendingDelete(null);
     setIsBugModalOpen(false);
     setEditingBug(null);
     await reloadBoard();
@@ -528,7 +539,7 @@ export function BugsBoardView({ theme, onThemeRestored }: BugsBoardViewProps) {
                   theme={theme}
                   onAddBugToColumn={(colId) => handleOpenCreateBug(colId)}
                   onEditBug={handleOpenEditBug}
-                  onDeleteBug={(bugId) => void handleDeleteBug(bugId)}
+                  onDeleteBug={(bugId) => void handleRequestDeleteBug(bugId)}
                   onMoveBugDirection={(bug, dir) => void handleMoveBugDirection(bug, dir)}
                   onRenameColumn={handleRenameColumn}
                   onDeleteColumn={handleDeleteColumn}
@@ -551,13 +562,70 @@ export function BugsBoardView({ theme, onThemeRestored }: BugsBoardViewProps) {
           setEditingBug(null);
         }}
         onSave={handleSaveBug}
-        onDelete={handleDeleteBug}
+        onDelete={handleRequestDeleteBug}
         onPushToJira={handlePushToJira}
         onPushToAdo={handlePushToAdo}
         onSyncSingleBugStatus={async (bug) => {
           await handleCheckSyncForBugs([bug]);
         }}
       />
+
+      {/* Delete Bug Confirmation Modal */}
+      {bugPendingDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirmar exclusão de bug"
+        >
+          <div
+            className={`w-full max-w-md rounded-2xl border shadow-2xl overflow-hidden p-6 space-y-4 ${
+              isLight
+                ? 'bg-white border-slate-200 text-slate-900'
+                : 'bg-slate-900 border-slate-800 text-slate-100'
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 rounded-xl bg-rose-500/15 text-rose-400 border border-rose-500/30 shrink-0">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold">Confirmar Exclusão</h3>
+                <p
+                  className={`text-xs leading-relaxed ${isLight ? 'text-slate-600' : 'text-slate-300'}`}
+                >
+                  Tem certeza que deseja excluir o card{' '}
+                  <strong className="font-semibold">&ldquo;{bugPendingDelete.title}&rdquo;</strong>?
+                  Esta ação removerá o card e seus anexos e não pode ser desfeita.
+                </p>
+              </div>
+            </div>
+
+            <div className="pt-2 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setBugPendingDelete(null)}
+                className={`px-4 py-2 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                  isLight
+                    ? 'border-slate-300 text-slate-700 hover:bg-slate-100'
+                    : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                }`}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                data-testid="confirm-delete-bug-btn"
+                onClick={() => void handleConfirmDeleteBug()}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-rose-600 text-white hover:bg-rose-500 transition-colors cursor-pointer"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Sim, Excluir</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Status Sync Preview & Confirmation Modal */}
       <StatusSyncModal

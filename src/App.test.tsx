@@ -84,11 +84,16 @@ describe('QA Board App Shell & Phase 1 Integration', () => {
       expect(moveLeftBtn).not.toBeDisabled();
     });
 
-    // Delete bug
+    // Delete bug (opens confirmation modal first, then confirms)
     const deleteBtn = screen.getByRole('button', {
       name: /Excluir Erro ao calcular frete no Checkout/i,
     });
     fireEvent.click(deleteBtn);
+
+    // Ensure bug is still present before confirming deletion
+    expect(screen.getByText('Erro ao calcular frete no Checkout')).toBeInTheDocument();
+    const confirmDeleteBtn = await screen.findByTestId('confirm-delete-bug-btn');
+    fireEvent.click(confirmDeleteBtn);
 
     await waitFor(() => {
       expect(screen.queryByText('Erro ao calcular frete no Checkout')).not.toBeInTheDocument();
