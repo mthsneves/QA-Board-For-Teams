@@ -9,7 +9,7 @@ Este documento registra as decisões tomadas ao longo do desenvolvimento do **QA
 2. **ESLint 9 (Flat Config) + Prettier + Vitest**:
    - Configurados desde a Fase 0 com scripts dedicados (`npm run lint`, `npm run format:check`, `npm test`) para garantir qualidade contínua antes de cada entrega de fase.
 3. **Permissões Tauri 2 (Capabilities)**:
-   - Adotado o modelo de privilégio mínimo em `src-tauri/capabilities/default.json`, liberando apenas acesso local ao banco SQLite (`sql:*`), diálogos nativos (`dialog:default`, `dialog:allow-open`, `dialog:allow-save`) e arquivos locais do app (`fs:default`).
+   - Adotado o modelo de privilégio mínimo em `src-tauri/capabilities/default.json`, liberando apenas acesso local ao banco SQLite (`sql:*`), diálogos nativos (`dialog:default`, `dialog:allow-open`, `dialog:allow-save`), atalho global (`global-shortcut:*`) e arquivos locais do app (`fs:default`).
 4. **TLS em Puro Rust (`rustls-tls`) no `reqwest`**:
    - Evita dependências de OpenSSL externas no Windows/macOS/Linux e garante compilação reprodutível para as chamadas HTTP de integração que ocorrerão exclusivamente no backend Rust.
 5. **Cofre Nativo do Sistema (`keyring` v3)**:
@@ -34,3 +34,12 @@ Este documento registra as decisões tomadas ao longo do desenvolvimento do **QA
    - O banco inicializa automaticamente os três templates clássicos de QA e permite associar casos tanto pela tela do caso de teste quanto pela tela do checklist.
 3. **Geração de Bug com Cópia de Evidências**:
    - Quando o analista clica em **"Gerar Bug a partir de Falha"** em um item de execução, o sistema cria o card na primeira coluna do Kanban já preenchido com `build_version`, `environment`, `steps_to_reproduce`, `expected_result` e `actual_result` (observação da falha), copia os anexos daquele item para o card do bug e grava a referência cruzada (`created_bug_id` e `test_run_item_id`).
+
+## Fase 3 — Produtividade e Relatórios
+
+1. **Gerador Nativo de PDF 1.4 (`generateTestRunPdfBytes`)**:
+   - Para evitar dependências pesadas de navegador ou serviços externos, implementamos um gerador de documento PDF 1.4 autônomo com suporte a codificação WinAnsi (acentuação em português) e gravação direta em disco pelo comando Rust `save_export_file`.
+2. **Atalho Global Configurável (`tauri-plugin-global-shortcut`)**:
+   - O atalho padrão `CommandOrControl+Shift+B` (personalizável pelo analista) registra um atalho global no sistema operacional que restaura/foca a janela do QA Board e abre imediatamente o modal de Captura Rápida com suporte a `Ctrl+V` de prints.
+3. **Geração Local de Massa de Dados (CPF e CNPJ Módulo 11)**:
+   - Os geradores de CPF e CNPJ calculam localmente os dígitos verificadores oficiais (Módulo 11), garantindo 100% de validade em formulários com validação algorítmica sem depender de internet.

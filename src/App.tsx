@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Bug,
   ClipboardCheck,
@@ -9,12 +9,21 @@ import {
   Layers,
   Sun,
   Moon,
+  Zap,
 } from 'lucide-react';
+import { register, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ThemeMode } from './types/models';
-import { getThemePreference, setThemePreference } from './db/database';
+import {
+  getQuickCaptureShortcut,
+  getThemePreference,
+  isTauriRuntime,
+  setThemePreference,
+} from './db/database';
 import { BugsBoardView } from './features/bugs';
 import { TestCasesView } from './features/testcases';
 import { TestRunsView } from './features/runs';
+import { QuickCaptureModal, ReportsView } from './features/reports';
 
 type ActiveSection = 'bugs' | 'testcases' | 'runs' | 'reports' | 'settings';
 
@@ -54,7 +63,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: 'reports',
     label: 'Produtividade & Relatórios',
-    phase: 'Fase 3',
+    phase: 'Ativo',
     description:
       'Templates para Jira/Azure DevOps/Markdown, captura rápida global, dashboard, exportação PDF/MD e massa de dados.',
     icon: BarChart3,
@@ -72,18 +81,65 @@ const NAV_ITEMS: NavItem[] = [
 export default function App() {
   const [activeSection, setActiveSection] = useState<ActiveSection>('bugs');
   const [theme, setTheme] = useState<ThemeMode>('dark');
+  const [isQuickCaptureOpen, setIsQuickCaptureOpen] = useState(false);
+  const [quickShortcut, setQuickShortcut] = useState('CommandOrControl+Shift+B');
+  const [boardRefreshCounter, setBoardRefreshCounter] = useState(0);
+
+  const registerGlobalHotkey = useCallback(async (shortcutStr: string) => {
+    if (!isTauriRuntime()) return;
+    try {
+      await unregisterAll();
+      await register(shortcutStr, async (event) => {
+        if (event.state === 'Pressed') {
+          try {
+            const win = getCurrentWindow();
+            await win.unminimize();
+            await win.show();
+            await win.setFocus();
+          } catch {
+            // ignore window focus errors
+          }
+          setIsQuickCaptureOpen(true);
+        }
+      });
+    } catch {
+      // Ignore if shortcut is already registered by another OS app
+    }
+  }, []);
 
   useEffect(() => {
     void (async () => {
-      const savedTheme = await getThemePreference();
+      const [savedTheme, savedShortcut] = await Promise.all([
+        getThemePreference(),
+        getQuickCaptureShortcut(),
+      ]);
       setTheme(savedTheme);
+      setQuickShortcut(savedShortcut);
+      await registerGlobalHotkey(savedShortcut);
     })();
+  }, [registerGlobalHotkey]);
+
+  // In-window keyboard shortcut listener fallback (Ctrl+Shift+B)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        setIsQuickCaptureOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
   const handleToggleTheme = async () => {
     const next: ThemeMode = theme === 'dark' ? 'light' : 'dark';
     setTheme(next);
     await setThemePreference(next);
+  };
+
+  const handleShortcutUpdated = async (newShortcut: string) => {
+    setQuickShortcut(newShortcut);
+    await registerGlobalHotkey(newShortcut);
   };
 
   const isLight = theme === 'light';
@@ -116,9 +172,9 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
           <div
-            className={`hidden sm:flex items-center gap-2 text-xs px-3 py-1.5 rounded-full border ${
+            className={`hidden md:flex items-center gap-2 text-xs px-3 py-1.5 rounded-full border ${
               isLight
                 ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
                 : 'text-emerald-400 bg-emerald-950/60 border-emerald-800/60'
@@ -127,6 +183,16 @@ export default function App() {
             <ShieldCheck className="h-4 w-4" />
             <span>100% Local • Segredos protegidos no cofre do SO</span>
           </div>
+
+          <button
+            type="button"
+            onClick={() => setIsQuickCaptureOpen(true)}
+            title={`Captura Rápida de Bug (${quickShortcut})`}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 transition-colors"
+          >
+            <Zap className="h-3.5 w-3.5" />
+            <span>Captura Rápida</span>
+          </button>
 
           <button
             type="button"
@@ -209,18 +275,23 @@ export default function App() {
               <Layers className="h-3.5 w-3.5 text-indigo-500" />
               <span>Status do Projeto</span>
             </div>
-            <p>Fase 2 ativa: Casos de Teste, Checklists, Test Runs e Sessões Exploratórias.</p>
+            <p>
+              Fase 3 ativa: Dashboard, Templates Jira/ADO/MD, Relatórios PDF/MD, Captura Rápida e
+              Massa de Dados.
+            </p>
           </div>
         </aside>
 
         {/* Main Content Area */}
         <main className="flex-1 p-6 overflow-y-auto">
           {activeSection === 'bugs' ? (
-            <BugsBoardView theme={theme} onThemeRestored={setTheme} />
+            <BugsBoardView key={boardRefreshCounter} theme={theme} onThemeRestored={setTheme} />
           ) : activeSection === 'testcases' ? (
             <TestCasesView theme={theme} />
           ) : activeSection === 'runs' ? (
             <TestRunsView theme={theme} onNavigateToBugs={() => setActiveSection('bugs')} />
+          ) : activeSection === 'reports' ? (
+            <ReportsView theme={theme} />
           ) : (
             <div className="max-w-3xl mx-auto">
               <div
@@ -249,6 +320,16 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {/* Global Quick Capture Modal */}
+      <QuickCaptureModal
+        isOpen={isQuickCaptureOpen}
+        theme={theme}
+        currentShortcut={quickShortcut}
+        onShortcutUpdated={handleShortcutUpdated}
+        onBugCreated={() => setBoardRefreshCounter((c) => c + 1)}
+        onClose={() => setIsQuickCaptureOpen(false)}
+      />
     </div>
   );
 }
