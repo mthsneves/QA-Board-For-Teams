@@ -43,3 +43,17 @@ Este documento registra as decisões tomadas ao longo do desenvolvimento do **QA
    - O atalho padrão `CommandOrControl+Shift+B` (personalizável pelo analista) registra um atalho global no sistema operacional que restaura/foca a janela do QA Board e abre imediatamente o modal de Captura Rápida com suporte a `Ctrl+V` de prints.
 3. **Geração Local de Massa de Dados (CPF e CNPJ Módulo 11)**:
    - Os geradores de CPF e CNPJ calculam localmente os dígitos verificadores oficiais (Módulo 11), garantindo 100% de validade em formulários com validação algorítmica sem depender de internet.
+
+## Fase 4 — Integrações Seguras via Rust (Jira, Azure DevOps e Slack)
+
+1. **Segredos Isolados no Cofre do Sistema Operacional (`keyring`)**:
+   - Os segredos (`jira_api_secret`, `azure_devops_pat`, `slack_webhook_url`) são gravados e lidos exclusivamente pelo código Rust no serviço `com.qaboard.desktop` do cofre nativo do sistema (Windows Credential Manager / macOS Keychain / Secret Service). O front-end React jamais recebe o valor do token: apenas consulta flags booleanas (`jira_configured`, `azure_devops_configured`, `slack_configured`) e limpa o campo de senha imediatamente após enviar ao comando Tauri.
+2. **Suporte Híbrido a Jira Cloud (API v3 + ADF) e Jira Data Center/Server (API v2)**:
+   - No modo **Jira Cloud**, a autenticação usa `Basic base64(email:api_token)` contra `/rest/api/3/issue` com descrição estruturada em **Atlassian Document Format (ADF)**. No modo **Data Center/Server**, usa `Bearer <PAT>` (ou `Basic` caso e-mail/usuário seja informado) contra `/rest/api/2/issue` com descrição em texto/wiki. O upload de prints do card é feito via `multipart/form-data` em `/rest/api/{2|3}/issue/{key}/attachments` com o cabeçalho obrigatório `X-Atlassian-Token: nocheck`.
+3. **Criação de Work Item e Anexos no Azure DevOps (REST API 7.1 JSON Patch)**:
+   - A criação de bugs no Azure DevOps utiliza `PATCH` com `Content-Type: application/json-patch+json` preenchendo `System.Title`, `Microsoft.VSTS.TCM.ReproSteps`, `Microsoft.VSTS.TCM.SystemInfo`, `Microsoft.VSTS.Common.Severity` e `System.Tags`. Os prints do card são enviados primeiro como stream binário para `/_apis/wit/attachments?api-version=7.1` e vinculados como relações `AttachedFile` no documento JSON Patch.
+4. **Sincronização de Status com Revisão Obrigatória (`StatusSyncModal`)**:
+   - Tanto o botão individual **"Atualizar Status"** no card quanto o botão em lote no topo do board consultam os status externos e abrem um modal de revisão comparando `Status Externo Anterior → Novo` e `Coluna Atual → Coluna Proposta` antes de aplicar qualquer mudança no SQLite, garantindo que nenhuma alteração do analista seja sobrescrita sem confirmação explícita.
+5. **Tratamento de Erros HTTP sem Vazamento de Segredos**:
+   - O módulo `src-tauri/src/integrations/mod.rs` intercepta falhas de rede, timeouts e códigos HTTP (`401`, `403`, `404`, `429`, `5xx`), traduzindo-os para mensagens amigáveis em português e omitindo URLs de webhook ou cabeçalhos sensíveis de qualquer mensagem de erro.
+

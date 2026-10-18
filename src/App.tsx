@@ -24,6 +24,7 @@ import { BugsBoardView } from './features/bugs';
 import { TestCasesView } from './features/testcases';
 import { TestRunsView } from './features/runs';
 import { QuickCaptureModal, ReportsView } from './features/reports';
+import { SettingsView } from './features/settings';
 
 type ActiveSection = 'bugs' | 'testcases' | 'runs' | 'reports' | 'settings';
 
@@ -71,7 +72,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: 'settings',
     label: 'Configurações & Integrações',
-    phase: 'Fase 4',
+    phase: 'Ativo',
     description:
       'Integração segura via Rust + cofre do sistema (keyring) com Jira, Azure DevOps e Slack.',
     icon: Settings,
@@ -84,6 +85,20 @@ export default function App() {
   const [isQuickCaptureOpen, setIsQuickCaptureOpen] = useState(false);
   const [quickShortcut, setQuickShortcut] = useState('CommandOrControl+Shift+B');
   const [boardRefreshCounter, setBoardRefreshCounter] = useState(0);
+  const [settingsNotice, setSettingsNotice] = useState<{
+    text: string;
+    type: 'success' | 'error';
+  } | null>(null);
+
+  const handleSettingsNotify = useCallback(
+    (text: string, type: 'success' | 'error' = 'success') => {
+      setSettingsNotice({ text, type });
+      setTimeout(() => {
+        setSettingsNotice((prev) => (prev?.text === text ? null : prev));
+      }, 4500);
+    },
+    [],
+  );
 
   const registerGlobalHotkey = useCallback(async (shortcutStr: string) => {
     if (!isTauriRuntime()) return;
@@ -143,8 +158,6 @@ export default function App() {
   };
 
   const isLight = theme === 'light';
-  const currentItem = NAV_ITEMS.find((item) => item.id === activeSection) ?? NAV_ITEMS[0];
-  const CurrentIcon = currentItem.icon;
 
   return (
     <div
@@ -276,8 +289,8 @@ export default function App() {
               <span>Status do Projeto</span>
             </div>
             <p>
-              Fase 3 ativa: Dashboard, Templates Jira/ADO/MD, Relatórios PDF/MD, Captura Rápida e
-              Massa de Dados.
+              Fase 4 ativa: Integrações seguras via Rust + Cofre do SO com Jira, Azure DevOps e
+              Slack.
             </p>
           </div>
         </aside>
@@ -293,29 +306,20 @@ export default function App() {
           ) : activeSection === 'reports' ? (
             <ReportsView theme={theme} />
           ) : (
-            <div className="max-w-3xl mx-auto">
-              <div
-                className={`rounded-2xl border p-6 shadow-sm ${
-                  isLight ? 'border-slate-200 bg-white' : 'border-slate-800 bg-slate-900/60'
-                }`}
-              >
-                <div className="flex items-start gap-4">
-                  <div className="p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
-                    <CurrentIcon className="h-6 w-6" />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-xl font-semibold">{currentItem.label}</h2>
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
-                        {currentItem.phase}
-                      </span>
-                    </div>
-                    <p className={`text-sm ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>
-                      {currentItem.description}
-                    </p>
-                  </div>
+            <div className="space-y-4">
+              {settingsNotice && (
+                <div
+                  role="status"
+                  className={`px-4 py-2.5 rounded-xl border text-xs font-medium ${
+                    settingsNotice.type === 'success'
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
+                      : 'bg-rose-500/15 border-rose-500/40 text-rose-400'
+                  }`}
+                >
+                  {settingsNotice.text}
                 </div>
-              </div>
+              )}
+              <SettingsView onNotify={handleSettingsNotify} />
             </div>
           )}
         </main>

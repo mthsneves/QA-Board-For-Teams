@@ -8,6 +8,8 @@ import {
   ClipboardPaste,
   ExternalLink,
   Clock,
+  RefreshCw,
+  Send,
 } from 'lucide-react';
 import {
   AttachmentRecord,
@@ -46,6 +48,9 @@ interface BugModalProps {
   onClose: () => void;
   onSave: (input: BugInput, pendingAttachments: PendingAttachment[]) => Promise<void>;
   onDelete?: (bugId: string) => Promise<void>;
+  onPushToJira?: (bug: BugCard) => Promise<BugCard>;
+  onPushToAdo?: (bug: BugCard) => Promise<BugCard>;
+  onSyncSingleBugStatus?: (bug: BugCard) => Promise<void>;
 }
 
 function fileToBase64(file: File): Promise<{ base64: string; dataUrl: string }> {
@@ -71,6 +76,9 @@ export function BugModal({
   onClose,
   onSave,
   onDelete,
+  onPushToJira,
+  onPushToAdo,
+  onSyncSingleBugStatus,
 }: BugModalProps) {
   const isLight = theme === 'light';
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -94,6 +102,9 @@ export function BugModal({
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [integrationLoading, setIntegrationLoading] = useState<'jira' | 'ado' | 'sync' | null>(
+    null,
+  );
 
   const [previewItem, setPreviewItem] = useState<{
     record: AttachmentRecord;
@@ -523,6 +534,112 @@ export function BugModal({
                 </div>
               </div>
             </div>
+
+            {/* Phase 4: External Integrations Actions (Jira / Azure DevOps / Status Sync) */}
+            {editingBug && (onPushToJira || onPushToAdo || onSyncSingleBugStatus) && (
+              <div
+                className={`rounded-xl border p-3.5 flex flex-wrap items-center justify-between gap-3 ${
+                  isLight
+                    ? 'bg-slate-50 border-slate-200 text-slate-700'
+                    : 'bg-slate-950/60 border-slate-800 text-slate-300'
+                }`}
+              >
+                <div className="space-y-0.5">
+                  <div className="text-xs font-bold flex items-center gap-2">
+                    <span>Integração Externa (Jira / Azure DevOps)</span>
+                    {editingBug.external_ticket_key && (
+                      <span
+                        data-testid="bug-modal-external-badge"
+                        className="font-mono px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                      >
+                        {editingBug.external_provider === 'jira' ? 'Jira' : 'ADO'} •{' '}
+                        {editingBug.external_ticket_key}
+                        {editingBug.external_status ? ` (${editingBug.external_status})` : ''}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Envie este card (com prints anexados) ou consulte o status atual sem expor
+                    credenciais ao front-end.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {onPushToJira && (
+                    <button
+                      type="button"
+                      data-testid="create-jira-issue-btn"
+                      disabled={integrationLoading !== null}
+                      onClick={async () => {
+                        setErrorMsg(null);
+                        setIntegrationLoading('jira');
+                        try {
+                          const updated = await onPushToJira(editingBug);
+                          setExternalTicketUrl(updated.external_ticket_url);
+                        } catch (err) {
+                          setErrorMsg(err instanceof Error ? err.message : String(err));
+                        } finally {
+                          setIntegrationLoading(null);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 cursor-pointer"
+                    >
+                      <Send className="h-3.5 w-3.5" />
+                      {integrationLoading === 'jira' ? 'Enviando...' : 'Criar Issue no Jira'}
+                    </button>
+                  )}
+
+                  {onPushToAdo && (
+                    <button
+                      type="button"
+                      data-testid="create-ado-workitem-btn"
+                      disabled={integrationLoading !== null}
+                      onClick={async () => {
+                        setErrorMsg(null);
+                        setIntegrationLoading('ado');
+                        try {
+                          const updated = await onPushToAdo(editingBug);
+                          setExternalTicketUrl(updated.external_ticket_url);
+                        } catch (err) {
+                          setErrorMsg(err instanceof Error ? err.message : String(err));
+                        } finally {
+                          setIntegrationLoading(null);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 hover:bg-sky-500 text-white disabled:opacity-50 cursor-pointer"
+                    >
+                      <Send className="h-3.5 w-3.5" />
+                      {integrationLoading === 'ado' ? 'Enviando...' : 'Criar Bug no Azure DevOps'}
+                    </button>
+                  )}
+
+                  {editingBug.external_ticket_key && onSyncSingleBugStatus && (
+                    <button
+                      type="button"
+                      data-testid="sync-single-bug-status-btn"
+                      disabled={integrationLoading !== null}
+                      onClick={async () => {
+                        setErrorMsg(null);
+                        setIntegrationLoading('sync');
+                        try {
+                          await onSyncSingleBugStatus(editingBug);
+                        } catch (err) {
+                          setErrorMsg(err instanceof Error ? err.message : String(err));
+                        } finally {
+                          setIntegrationLoading(null);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 border border-indigo-500/30 disabled:opacity-50 cursor-pointer"
+                    >
+                      <RefreshCw
+                        className={`h-3.5 w-3.5 ${integrationLoading === 'sync' ? 'animate-spin' : ''}`}
+                      />
+                      Atualizar Status
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Steps to Reproduce, Expected & Actual Results */}
             <div className="space-y-4">

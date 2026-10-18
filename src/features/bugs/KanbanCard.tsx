@@ -201,11 +201,14 @@ export function KanbanCard({
               target="_blank"
               rel="noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="inline-flex items-center gap-1 text-emerald-400 hover:underline"
+              className="inline-flex items-center gap-1 text-emerald-400 hover:underline font-medium"
               title="Abrir ticket externo"
             >
               <ExternalLink className="h-3 w-3" />
-              <span>{bug.external_ticket_key || 'Ticket'}</span>
+              <span>
+                {bug.external_ticket_key || 'Ticket'}
+                {bug.external_status ? ` · ${bug.external_status}` : ''}
+              </span>
             </a>
           )}
           <span className="text-[10px] opacity-75">

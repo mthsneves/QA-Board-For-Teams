@@ -15,11 +15,18 @@ import {
   ChecklistInput,
   ChecklistTemplate,
   DEFAULT_BOARD_COLUMNS,
+  DEFAULT_INTEGRATION_SETTINGS,
+  DEFAULT_STATUS_MAPPINGS,
   ExploratorySession,
   ExploratorySessionInput,
+  ExternalTicketResult,
+  IntegrationSecretKey,
+  IntegrationSecretStatus,
+  IntegrationSettings,
   SnippetCategory,
   SnippetInput,
   SnippetItem,
+  StatusSyncProposal,
   TestCase,
   TestCaseInput,
   TestRun,
@@ -153,6 +160,7 @@ let memoryStore: MemoryStore = createInitialMemoryStore();
 
 export function resetInMemoryStoreForTests(): void {
   memoryStore = createInitialMemoryStore();
+  resetIntegrationMockStateForTests();
 }
 
 // ============================================================================
@@ -2040,4 +2048,494 @@ export async function importBackupDialog(): Promise<BackupPayload | null> {
   const validated = validateBackupPayload(parsed);
   await restoreFromBackupPayload(validated);
   return validated;
+}
+
+// ============================================================================
+// Phase 4: Integrations (Settings in SQLite, Secrets strictly in OS Keyring via Rust)
+// ============================================================================
+interface IntegrationMockState {
+  secretStatus: IntegrationSecretStatus;
+  externalTicketStatuses: Record<string, string>;
+  ticketSeq: number;
+  lastSlackSummarySent: string | null;
+}
+
+function createInitialIntegrationMockState(): IntegrationMockState {
+  return {
+    secretStatus: {
+      jira_configured: false,
+      azure_devops_configured: false,
+      slack_configured: false,
+    },
+    externalTicketStatuses: {},
+    ticketSeq: 100,
+    lastSlackSummarySent: null,
+  };
+}
+
+let integrationMockState: IntegrationMockState = createInitialIntegrationMockState();
+
+export function resetIntegrationMockStateForTests(): void {
+  integrationMockState = createInitialIntegrationMockState();
+}
+
+export function setMockExternalTicketStatusForTests(ticketKey: string, status: string): void {
+  integrationMockState.externalTicketStatuses[ticketKey] = status;
+}
+
+export function getLastSlackSummarySentForTests(): string | null {
+  return integrationMockState.lastSlackSummarySent;
+}
+
+const INTEGRATION_SETTINGS_PREF_KEY = 'integration_settings_v4';
+
+export async function getIntegrationSettings(): Promise<IntegrationSettings> {
+  let rawJson: string | undefined;
+  if (!isTauriRuntime()) {
+    rawJson = memoryStore.preferences[INTEGRATION_SETTINGS_PREF_KEY];
+  } else {
+    const db = await getSqliteDb();
+    const rows = await db.select<Array<{ value: string }>>(
+      'SELECT value FROM app_preferences WHERE key = $1',
+      [INTEGRATION_SETTINGS_PREF_KEY],
+    );
+    rawJson = rows[0]?.value;
+  }
+
+  if (!rawJson) {
+    return {
+      jira: { ...DEFAULT_INTEGRATION_SETTINGS.jira },
+      azure_devops: { ...DEFAULT_INTEGRATION_SETTINGS.azure_devops },
+      status_mappings: DEFAULT_STATUS_MAPPINGS.map((m) => ({ ...m })),
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(rawJson) as Partial<IntegrationSettings>;
+    return {
+      jira: {
+        deployment_type: parsed.jira?.deployment_type === 'server' ? 'server' : ('cloud' as const),
+        base_url: parsed.jira?.base_url ?? '',
+        email: parsed.jira?.email ?? '',
+        project_key: parsed.jira?.project_key ?? 'QA',
+        issue_type: parsed.jira?.issue_type ?? 'Bug',
+      },
+      azure_devops: {
+        organization: parsed.azure_devops?.organization ?? '',
+        project: parsed.azure_devops?.project ?? '',
+        work_item_type: parsed.azure_devops?.work_item_type ?? 'Bug',
+      },
+      status_mappings:
+        Array.isArray(parsed.status_mappings) && parsed.status_mappings.length > 0
+          ? parsed.status_mappings.map((m) => ({
+              external_status: String(m.external_status || '').trim(),
+              target_column_name: String(m.target_column_name || '').trim(),
+            }))
+          : DEFAULT_STATUS_MAPPINGS.map((m) => ({ ...m })),
+    };
+  } catch {
+    return {
+      jira: { ...DEFAULT_INTEGRATION_SETTINGS.jira },
+      azure_devops: { ...DEFAULT_INTEGRATION_SETTINGS.azure_devops },
+      status_mappings: DEFAULT_STATUS_MAPPINGS.map((m) => ({ ...m })),
+    };
+  }
+}
+
+export async function saveIntegrationSettings(settings: IntegrationSettings): Promise<void> {
+  // Explicitly construct only non-secret configuration fields before persisting
+  const sanitized: IntegrationSettings = {
+    jira: {
+      deployment_type: settings.jira.deployment_type === 'server' ? 'server' : 'cloud',
+      base_url: settings.jira.base_url.trim().replace(/\/+$/, ''),
+      email: settings.jira.email.trim(),
+      project_key: settings.jira.project_key.trim().toUpperCase() || 'QA',
+      issue_type: settings.jira.issue_type.trim() || 'Bug',
+    },
+    azure_devops: {
+      organization: settings.azure_devops.organization.trim(),
+      project: settings.azure_devops.project.trim(),
+      work_item_type: settings.azure_devops.work_item_type.trim() || 'Bug',
+    },
+    status_mappings: settings.status_mappings
+      .map((m) => ({
+        external_status: m.external_status.trim(),
+        target_column_name: m.target_column_name.trim(),
+      }))
+      .filter((m) => m.external_status.length > 0 && m.target_column_name.length > 0),
+  };
+
+  const jsonValue = JSON.stringify(sanitized);
+  if (!isTauriRuntime()) {
+    memoryStore.preferences[INTEGRATION_SETTINGS_PREF_KEY] = jsonValue;
+    return;
+  }
+
+  const db = await getSqliteDb();
+  await db.execute(
+    `INSERT INTO app_preferences (key, value) VALUES ($1, $2)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    [INTEGRATION_SETTINGS_PREF_KEY, jsonValue],
+  );
+}
+
+export async function getIntegrationsSecretStatus(): Promise<IntegrationSecretStatus> {
+  if (!isTauriRuntime()) {
+    return { ...integrationMockState.secretStatus };
+  }
+  return invoke<IntegrationSecretStatus>('get_integrations_secret_status');
+}
+
+export async function saveIntegrationSecret(
+  key: IntegrationSecretKey,
+  secretValue: string,
+): Promise<IntegrationSecretStatus> {
+  const trimmed = secretValue.trim();
+  if (!trimmed) {
+    throw new Error('O valor do segredo não pode estar vazio.');
+  }
+  if (!isTauriRuntime()) {
+    if (key === 'jira_api_secret') integrationMockState.secretStatus.jira_configured = true;
+    if (key === 'azure_devops_pat')
+      integrationMockState.secretStatus.azure_devops_configured = true;
+    if (key === 'slack_webhook_url') integrationMockState.secretStatus.slack_configured = true;
+    return { ...integrationMockState.secretStatus };
+  }
+  return invoke<IntegrationSecretStatus>('save_integration_secret', {
+    key,
+    secretValue: trimmed,
+  });
+}
+
+export async function deleteIntegrationSecret(
+  key: IntegrationSecretKey,
+): Promise<IntegrationSecretStatus> {
+  if (!isTauriRuntime()) {
+    if (key === 'jira_api_secret') integrationMockState.secretStatus.jira_configured = false;
+    if (key === 'azure_devops_pat')
+      integrationMockState.secretStatus.azure_devops_configured = false;
+    if (key === 'slack_webhook_url') integrationMockState.secretStatus.slack_configured = false;
+    return { ...integrationMockState.secretStatus };
+  }
+  return invoke<IntegrationSecretStatus>('delete_integration_secret', { key });
+}
+
+export async function testJiraConnection(settings?: IntegrationSettings): Promise<string> {
+  const cfg = settings ?? (await getIntegrationSettings());
+  if (!isTauriRuntime()) {
+    if (!integrationMockState.secretStatus.jira_configured) {
+      throw new Error('Credencial do Jira não configurada no cofre do sistema.');
+    }
+    if (!cfg.jira.base_url.trim()) {
+      throw new Error('Informe a URL base do Jira.');
+    }
+    return `Conexão com Jira (${cfg.jira.deployment_type === 'cloud' ? 'Cloud' : 'Data Center'}) validada com sucesso!`;
+  }
+  return invoke<string>('test_jira_connection', {
+    deploymentType: cfg.jira.deployment_type,
+    baseUrl: cfg.jira.base_url,
+    email: cfg.jira.email,
+  });
+}
+
+export async function testAdoConnection(settings?: IntegrationSettings): Promise<string> {
+  const cfg = settings ?? (await getIntegrationSettings());
+  if (!isTauriRuntime()) {
+    if (!integrationMockState.secretStatus.azure_devops_configured) {
+      throw new Error('PAT do Azure DevOps não configurado no cofre do sistema.');
+    }
+    if (!cfg.azure_devops.organization.trim() || !cfg.azure_devops.project.trim()) {
+      throw new Error('Informe a organização e o projeto do Azure DevOps.');
+    }
+    return `Conexão com Azure DevOps (${cfg.azure_devops.organization}/${cfg.azure_devops.project}) validada com sucesso!`;
+  }
+  return invoke<string>('test_ado_connection', {
+    organization: cfg.azure_devops.organization,
+    project: cfg.azure_devops.project,
+  });
+}
+
+export async function testSlackConnection(): Promise<string> {
+  if (!isTauriRuntime()) {
+    if (!integrationMockState.secretStatus.slack_configured) {
+      throw new Error('Webhook do Slack não configurado no cofre do sistema.');
+    }
+    return 'Mensagem de teste enviada para o Slack com sucesso!';
+  }
+  return invoke<string>('test_slack_connection');
+}
+
+export async function createJiraIssueForBug(
+  bug: BugCard,
+  settings?: IntegrationSettings,
+): Promise<BugCard> {
+  const cfg = settings ?? (await getIntegrationSettings());
+  const attachments = await listAttachmentsForParent('bug', bug.id);
+
+  let ticket: ExternalTicketResult;
+  if (!isTauriRuntime()) {
+    if (!integrationMockState.secretStatus.jira_configured) {
+      throw new Error('Credencial do Jira não configurada no cofre do sistema.');
+    }
+    integrationMockState.ticketSeq += 1;
+    const key = `${cfg.jira.project_key || 'QA'}-${integrationMockState.ticketSeq}`;
+    const baseUrl = cfg.jira.base_url.replace(/\/+$/, '') || 'https://jira.exemplo.local';
+    ticket = {
+      key,
+      url: `${baseUrl}/browse/${key}`,
+      status: 'To Do',
+    };
+    integrationMockState.externalTicketStatuses[key] = ticket.status;
+  } else {
+    ticket = await invoke<ExternalTicketResult>('create_jira_issue', {
+      deploymentType: cfg.jira.deployment_type,
+      baseUrl: cfg.jira.base_url,
+      email: cfg.jira.email,
+      projectKey: cfg.jira.project_key,
+      issueType: cfg.jira.issue_type,
+      title: bug.title,
+      severity: bug.severity,
+      priority: bug.priority,
+      environment: bug.environment,
+      buildVersion: bug.build_version,
+      module: bug.module,
+      stepsToReproduce: bug.steps_to_reproduce,
+      expectedResult: bug.expected_result,
+      actualResult: bug.actual_result,
+      tags: bug.tags,
+      attachments: attachments.map((a) => ({
+        file_name: a.file_name,
+        mime_type: a.mime_type,
+        relative_path: a.relative_path,
+      })),
+    });
+  }
+
+  return updateBug(bug.id, {
+    external_provider: 'jira',
+    external_ticket_key: ticket.key,
+    external_ticket_url: ticket.url,
+    external_status: ticket.status,
+  });
+}
+
+export async function createAdoWorkItemForBug(
+  bug: BugCard,
+  settings?: IntegrationSettings,
+): Promise<BugCard> {
+  const cfg = settings ?? (await getIntegrationSettings());
+  const attachments = await listAttachmentsForParent('bug', bug.id);
+
+  let ticket: ExternalTicketResult;
+  if (!isTauriRuntime()) {
+    if (!integrationMockState.secretStatus.azure_devops_configured) {
+      throw new Error('PAT do Azure DevOps não configurado no cofre do sistema.');
+    }
+    integrationMockState.ticketSeq += 1;
+    const idStr = String(integrationMockState.ticketSeq);
+    const org = cfg.azure_devops.organization || 'org';
+    const proj = cfg.azure_devops.project || 'proj';
+    ticket = {
+      key: idStr,
+      url: `https://dev.azure.com/${org}/${proj}/_workitems/edit/${idStr}`,
+      status: 'New',
+    };
+    integrationMockState.externalTicketStatuses[idStr] = ticket.status;
+  } else {
+    ticket = await invoke<ExternalTicketResult>('create_ado_work_item', {
+      organization: cfg.azure_devops.organization,
+      project: cfg.azure_devops.project,
+      workItemType: cfg.azure_devops.work_item_type,
+      title: bug.title,
+      severity: bug.severity,
+      priority: bug.priority,
+      environment: bug.environment,
+      buildVersion: bug.build_version,
+      module: bug.module,
+      stepsToReproduce: bug.steps_to_reproduce,
+      expectedResult: bug.expected_result,
+      actualResult: bug.actual_result,
+      tags: bug.tags,
+      attachments: attachments.map((a) => ({
+        file_name: a.file_name,
+        mime_type: a.mime_type,
+        relative_path: a.relative_path,
+      })),
+    });
+  }
+
+  return updateBug(bug.id, {
+    external_provider: 'azure_devops',
+    external_ticket_key: ticket.key,
+    external_ticket_url: ticket.url,
+    external_status: ticket.status,
+  });
+}
+
+export async function fetchExternalBugStatus(
+  bug: BugCard,
+  settings?: IntegrationSettings,
+): Promise<string> {
+  const cfg = settings ?? (await getIntegrationSettings());
+  const key = bug.external_ticket_key.trim();
+  if (!key || !bug.external_provider) {
+    throw new Error('Este bug não possui um ticket externo vinculado.');
+  }
+
+  if (!isTauriRuntime()) {
+    return integrationMockState.externalTicketStatuses[key] || bug.external_status || 'In Progress';
+  }
+
+  if (bug.external_provider === 'jira') {
+    return invoke<string>('fetch_jira_issue_status', {
+      deploymentType: cfg.jira.deployment_type,
+      baseUrl: cfg.jira.base_url,
+      email: cfg.jira.email,
+      issueKey: key,
+    });
+  }
+
+  return invoke<string>('fetch_ado_work_item_status', {
+    organization: cfg.azure_devops.organization,
+    project: cfg.azure_devops.project,
+    workItemId: key,
+  });
+}
+
+export async function checkExternalStatusUpdates(
+  bugsToSync: BugCard[],
+  columns: BoardColumn[],
+  settings?: IntegrationSettings,
+): Promise<StatusSyncProposal[]> {
+  const cfg = settings ?? (await getIntegrationSettings());
+  const linkedBugs = bugsToSync.filter(
+    (b) => b.external_provider && b.external_ticket_key.trim().length > 0,
+  );
+
+  const proposals: StatusSyncProposal[] = [];
+
+  for (const bug of linkedBugs) {
+    const newExternalStatus = await fetchExternalBugStatus(bug, cfg);
+    const currentCol = columns.find((c) => c.id === bug.column_id);
+    const currentColumnName = currentCol?.name || 'Desconhecida';
+
+    const matchedRule = cfg.status_mappings.find(
+      (rule) =>
+        rule.external_status.trim().toLowerCase() === newExternalStatus.trim().toLowerCase(),
+    );
+
+    let proposedCol = currentCol;
+    if (matchedRule) {
+      const targetCol = columns.find(
+        (c) => c.name.trim().toLowerCase() === matchedRule.target_column_name.trim().toLowerCase(),
+      );
+      if (targetCol) {
+        proposedCol = targetCol;
+      }
+    }
+
+    const proposedColumnId = proposedCol?.id || bug.column_id;
+    const proposedColumnName = proposedCol?.name || currentColumnName;
+    const willMoveColumn = proposedColumnId !== bug.column_id;
+    const statusChanged = newExternalStatus.trim() !== (bug.external_status || '').trim();
+
+    if (willMoveColumn || statusChanged) {
+      proposals.push({
+        bug_id: bug.id,
+        bug_title: bug.title,
+        provider: bug.external_provider as 'jira' | 'azure_devops',
+        ticket_key: bug.external_ticket_key,
+        previous_external_status: bug.external_status || '—',
+        new_external_status: newExternalStatus,
+        current_column_id: bug.column_id,
+        current_column_name: currentColumnName,
+        proposed_column_id: proposedColumnId,
+        proposed_column_name: proposedColumnName,
+        will_move_column: willMoveColumn,
+      });
+    }
+  }
+
+  return proposals;
+}
+
+export async function applyExternalStatusProposals(proposals: StatusSyncProposal[]): Promise<void> {
+  const allBugs = await listBugs();
+  for (const prop of proposals) {
+    const bug = allBugs.find((b) => b.id === prop.bug_id);
+    if (!bug) continue;
+
+    await updateBug(bug.id, {
+      external_status: prop.new_external_status,
+    });
+
+    if (prop.will_move_column && prop.proposed_column_id !== bug.column_id) {
+      const latestBugs = await listBugs();
+      const targetColBugIds = latestBugs
+        .filter((b) => b.column_id === prop.proposed_column_id && b.id !== bug.id)
+        .map((b) => b.id);
+      targetColBugIds.push(bug.id);
+      await moveAndReorderBug(bug.id, prop.proposed_column_id, targetColBugIds);
+    }
+  }
+}
+
+export function buildSlackRunSummaryPreview(run: TestRun, items: TestRunItem[]): string {
+  const passed = items.filter((i) => i.status === 'Passou').length;
+  const failedItems = items.filter((i) => i.status === 'Falhou');
+  const blocked = items.filter((i) => i.status === 'Bloqueado').length;
+  const skipped = items.filter((i) => i.status === 'Pulado').length;
+  const total = items.length;
+  const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
+
+  let text = `*QA Board — Resumo de Execução*\n`;
+  text += `*${run.name}*`;
+  if (run.build_version.trim()) {
+    text += ` (${run.build_version.trim()})`;
+  }
+  if (run.environment.trim()) {
+    text += ` • Ambiente: \`${run.environment.trim()}\``;
+  }
+  text += `\n• *${passed} passaram*, *${failedItems.length} falharam*, ${blocked} bloqueados, ${skipped} pulados (Taxa de aprovação: *${passRate}%*)\n`;
+
+  if (failedItems.length > 0) {
+    text += `\n*Casos que falharam (${failedItems.length}):*\n`;
+    for (const item of failedItems.slice(0, 20)) {
+      text += `• ❌ ${item.title}${item.module ? ` [${item.module}]` : ''}\n`;
+    }
+    if (failedItems.length > 20) {
+      text += `• _...e mais ${failedItems.length - 20} falha(s)._\n`;
+    }
+  } else {
+    text += `\n🎉 _Nenhuma falha registrada nesta execução!_\n`;
+  }
+
+  return text;
+}
+
+export async function sendSlackRunSummary(run: TestRun, items: TestRunItem[]): Promise<string> {
+  const passedCount = items.filter((i) => i.status === 'Passou').length;
+  const failedItems = items.filter((i) => i.status === 'Falhou');
+  const blockedCount = items.filter((i) => i.status === 'Bloqueado').length;
+  const skippedCount = items.filter((i) => i.status === 'Pulado').length;
+  const failedCases = failedItems.map((i) => (i.module ? `${i.title} [${i.module}]` : i.title));
+
+  if (!isTauriRuntime()) {
+    if (!integrationMockState.secretStatus.slack_configured) {
+      throw new Error('Webhook do Slack não configurado no cofre do sistema.');
+    }
+    integrationMockState.lastSlackSummarySent = buildSlackRunSummaryPreview(run, items);
+    return 'Resumo da execução enviado ao Slack com sucesso!';
+  }
+
+  return invoke<string>('send_slack_run_summary', {
+    runName: run.name,
+    buildVersion: run.build_version,
+    environment: run.environment,
+    passedCount,
+    failedCount: failedItems.length,
+    blockedCount,
+    skippedCount,
+    failedCases,
+  });
 }

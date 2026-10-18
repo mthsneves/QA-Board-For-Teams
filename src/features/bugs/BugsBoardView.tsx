@@ -8,11 +8,30 @@ import {
   useSensors,
 } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
-import { Plus, Columns3, Download, Upload, CheckCircle2, AlertCircle } from 'lucide-react';
-import { BoardColumn, BugCard, BugFilters, BugInput, ThemeMode } from '../../types/models';
 import {
+  Plus,
+  Columns3,
+  Download,
+  Upload,
+  CheckCircle2,
+  AlertCircle,
+  RefreshCw,
+} from 'lucide-react';
+import {
+  BoardColumn,
+  BugCard,
+  BugFilters,
+  BugInput,
+  StatusSyncProposal,
+  ThemeMode,
+} from '../../types/models';
+import {
+  applyExternalStatusProposals,
+  checkExternalStatusUpdates,
+  createAdoWorkItemForBug,
   createBug,
   createColumn,
+  createJiraIssueForBug,
   deleteBug,
   deleteColumn,
   exportBackupDialog,
@@ -29,6 +48,7 @@ import {
 import { BugFiltersBar } from './BugFiltersBar';
 import { KanbanColumn } from './KanbanColumn';
 import { BugModal, PendingAttachment } from './BugModal';
+import { StatusSyncModal } from './StatusSyncModal';
 
 interface BugsBoardViewProps {
   theme: ThemeMode;
@@ -57,6 +77,10 @@ export function BugsBoardView({ theme, onThemeRestored }: BugsBoardViewProps) {
 
   const [isAddingColumn, setIsAddingColumn] = useState(false);
   const [newColumnName, setNewColumnName] = useState('');
+
+  const [isSyncingStatuses, setIsSyncingStatuses] = useState(false);
+  const [syncProposals, setSyncProposals] = useState<StatusSyncProposal[]>([]);
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
 
   const [feedback, setFeedback] = useState<{
     type: 'success' | 'error';
@@ -274,7 +298,60 @@ export function BugsBoardView({ theme, onThemeRestored }: BugsBoardViewProps) {
     }
   };
 
+  const handlePushToJira = async (bug: BugCard): Promise<BugCard> => {
+    const updated = await createJiraIssueForBug(bug);
+    setEditingBug(updated);
+    await reloadBoard();
+    showNotice('success', `Issue ${updated.external_ticket_key} criada no Jira com sucesso!`);
+    return updated;
+  };
+
+  const handlePushToAdo = async (bug: BugCard): Promise<BugCard> => {
+    const updated = await createAdoWorkItemForBug(bug);
+    setEditingBug(updated);
+    await reloadBoard();
+    showNotice('success', `Work Item #${updated.external_ticket_key} criado no Azure DevOps!`);
+    return updated;
+  };
+
+  const handleCheckSyncForBugs = async (targetBugs: BugCard[]) => {
+    const linked = targetBugs.filter((b) => b.external_provider && b.external_ticket_key);
+    if (linked.length === 0) {
+      showNotice(
+        'error',
+        'Nenhum card possui ticket externo (Jira ou Azure DevOps) vinculado para sincronizar.',
+      );
+      return;
+    }
+
+    setIsSyncingStatuses(true);
+    try {
+      const proposals = await checkExternalStatusUpdates(linked, columns);
+      setSyncProposals(proposals);
+      setIsSyncModalOpen(true);
+    } catch (err) {
+      showNotice(
+        'error',
+        err instanceof Error ? err.message : 'Falha ao consultar status externos.',
+      );
+    } finally {
+      setIsSyncingStatuses(false);
+    }
+  };
+
+  const handleConfirmSyncProposals = async (selected: StatusSyncProposal[]) => {
+    await applyExternalStatusProposals(selected);
+    await reloadBoard();
+    if (editingBug) {
+      const freshBugs = await listBugs();
+      const refreshed = freshBugs.find((b) => b.id === editingBug.id) || null;
+      setEditingBug(refreshed);
+    }
+    showNotice('success', `${selected.length} card(s) sincronizado(s) com o status externo.`);
+  };
+
   const filteredBugs = filterBugs(bugs, filters);
+  const linkedBugsCount = bugs.filter((b) => b.external_provider && b.external_ticket_key).length;
 
   return (
     <div className="flex flex-col h-full space-y-4">
@@ -289,6 +366,25 @@ export function BugsBoardView({ theme, onThemeRestored }: BugsBoardViewProps) {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {linkedBugsCount > 0 && (
+            <button
+              type="button"
+              data-testid="sync-all-statuses-btn"
+              disabled={isSyncingStatuses}
+              onClick={() => void handleCheckSyncForBugs(bugs)}
+              className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                isLight
+                  ? 'bg-white border-indigo-300 text-indigo-700 hover:bg-indigo-50'
+                  : 'bg-slate-900 border-indigo-700/60 text-indigo-300 hover:bg-slate-800'
+              }`}
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 text-indigo-400 ${isSyncingStatuses ? 'animate-spin' : ''}`}
+              />
+              <span>Atualizar Status ({linkedBugsCount})</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => void handleExportBackup()}
@@ -456,6 +552,20 @@ export function BugsBoardView({ theme, onThemeRestored }: BugsBoardViewProps) {
         }}
         onSave={handleSaveBug}
         onDelete={handleDeleteBug}
+        onPushToJira={handlePushToJira}
+        onPushToAdo={handlePushToAdo}
+        onSyncSingleBugStatus={async (bug) => {
+          await handleCheckSyncForBugs([bug]);
+        }}
+      />
+
+      {/* Status Sync Preview & Confirmation Modal */}
+      <StatusSyncModal
+        isOpen={isSyncModalOpen}
+        theme={theme}
+        proposals={syncProposals}
+        onClose={() => setIsSyncModalOpen(false)}
+        onConfirm={handleConfirmSyncProposals}
       />
     </div>
   );

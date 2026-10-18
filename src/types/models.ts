@@ -253,3 +253,87 @@ export const CHECKLIST_CATEGORIES: ChecklistCategory[] = [
   'Pré-Release',
   'Personalizado',
 ];
+
+export type JiraDeploymentType = 'cloud' | 'server';
+
+export type IntegrationSecretKey = 'jira_api_secret' | 'azure_devops_pat' | 'slack_webhook_url';
+
+export interface IntegrationSecretStatus {
+  jira_configured: boolean;
+  azure_devops_configured: boolean;
+  slack_configured: boolean;
+}
+
+export interface JiraSettingsConfig {
+  deployment_type: JiraDeploymentType;
+  base_url: string;
+  email: string;
+  project_key: string;
+  issue_type: string;
+}
+
+export interface AdoSettingsConfig {
+  organization: string;
+  project: string;
+  work_item_type: string;
+}
+
+export interface StatusMappingRule {
+  external_status: string;
+  target_column_name: string;
+}
+
+export interface IntegrationSettings {
+  jira: JiraSettingsConfig;
+  azure_devops: AdoSettingsConfig;
+  status_mappings: StatusMappingRule[];
+}
+
+export interface ExternalTicketResult {
+  key: string;
+  url: string;
+  status: string;
+}
+
+export interface StatusSyncProposal {
+  bug_id: string;
+  bug_title: string;
+  provider: 'jira' | 'azure_devops';
+  ticket_key: string;
+  previous_external_status: string;
+  new_external_status: string;
+  current_column_id: string;
+  current_column_name: string;
+  proposed_column_id: string;
+  proposed_column_name: string;
+  will_move_column: boolean;
+}
+
+export const DEFAULT_STATUS_MAPPINGS: StatusMappingRule[] = [
+  { external_status: 'To Do', target_column_name: 'Reportado' },
+  { external_status: 'New', target_column_name: 'Reportado' },
+  { external_status: 'Open', target_column_name: 'Reportado' },
+  { external_status: 'In Progress', target_column_name: 'Aguardando fix' },
+  { external_status: 'Active', target_column_name: 'Aguardando fix' },
+  { external_status: 'Resolved', target_column_name: 'Reteste' },
+  { external_status: 'Ready for QA', target_column_name: 'Reteste' },
+  { external_status: 'In QA', target_column_name: 'Reteste' },
+  { external_status: 'Done', target_column_name: 'Fechado' },
+  { external_status: 'Closed', target_column_name: 'Fechado' },
+];
+
+export const DEFAULT_INTEGRATION_SETTINGS: IntegrationSettings = {
+  jira: {
+    deployment_type: 'cloud',
+    base_url: '',
+    email: '',
+    project_key: 'QA',
+    issue_type: 'Bug',
+  },
+  azure_devops: {
+    organization: '',
+    project: '',
+    work_item_type: 'Bug',
+  },
+  status_mappings: DEFAULT_STATUS_MAPPINGS,
+};
