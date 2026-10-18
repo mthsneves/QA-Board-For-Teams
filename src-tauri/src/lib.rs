@@ -1,4 +1,5 @@
 pub mod integrations;
+pub mod storage;
 
 #[tauri::command]
 fn health_check() -> &'static str {
@@ -12,7 +13,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![health_check])
+        .invoke_handler(tauri::generate_handler![
+            health_check,
+            storage::save_attachment,
+            storage::read_attachment,
+            storage::delete_attachment,
+            storage::export_backup_zip,
+            storage::import_backup_zip,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running QA Board application");
 }
