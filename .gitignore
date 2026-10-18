@@ -33,6 +33,7 @@ secrets.*
 *.sqlite3
 massa-*.zip
 test-data/
+*.exe
 
 # Editor directories and files
 .vscode/*

@@ -8,6 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "node scripts/run-tauri.mjs",
+    "gerar-exe": "node scripts/run-tauri.mjs build",
+    "gerar-massa": "node scripts/gerar-massa.mjs",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css,json}\"",
