@@ -21,6 +21,17 @@ pub fn run() {
             storage::export_backup_zip,
             storage::import_backup_zip,
             storage::save_export_file,
+            integrations::get_integrations_secret_status,
+            integrations::save_integration_secret,
+            integrations::delete_integration_secret,
+            integrations::test_jira_connection,
+            integrations::create_jira_issue,
+            integrations::fetch_jira_issue_status,
+            integrations::test_ado_connection,
+            integrations::create_ado_work_item,
+            integrations::fetch_ado_work_item_status,
+            integrations::test_slack_connection,
+            integrations::send_slack_run_summary,
         ])
         .run(tauri::generate_context!())
         .expect("error while running QA Board application");
