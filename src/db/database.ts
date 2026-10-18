@@ -11,7 +11,18 @@ import {
   BugInput,
   BugPriority,
   BugSeverity,
+  ChecklistCategory,
+  ChecklistInput,
+  ChecklistTemplate,
   DEFAULT_BOARD_COLUMNS,
+  ExploratorySession,
+  ExploratorySessionInput,
+  TestCase,
+  TestCaseInput,
+  TestRun,
+  TestRunInput,
+  TestRunItem,
+  TestRunItemStatus,
   ThemeMode,
 } from '../types/models';
 
@@ -26,6 +37,30 @@ export function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${random}`;
 }
 
+export const DEFAULT_CHECKLISTS_SEED: Array<
+  Pick<ChecklistTemplate, 'id' | 'name' | 'category' | 'description'>
+> = [
+  {
+    id: 'chk-smoke',
+    name: 'Checklist Smoke Test',
+    category: 'Smoke',
+    description: 'Validação rápida dos fluxos críticos logo após o deploy da build.',
+  },
+  {
+    id: 'chk-regression',
+    name: 'Suíte de Regressão Principal',
+    category: 'Regressão',
+    description: 'Bateria completa de regressão nos módulos centrais do sistema.',
+  },
+  {
+    id: 'chk-prerelease',
+    name: 'Checklist Pré-Release',
+    category: 'Pré-Release',
+    description:
+      'Verificações finais de sanidade, integrações e fluxos ponta a ponta antes de produção.',
+  },
+];
+
 // ============================================================================
 // In-Memory Fallback Store (Used for Vitest and non-Tauri browser preview)
 // ============================================================================
@@ -33,6 +68,11 @@ interface MemoryStore {
   columns: BoardColumn[];
   bugs: BugCard[];
   attachments: AttachmentRecord[];
+  testCases: TestCase[];
+  checklists: ChecklistTemplate[];
+  testRuns: TestRun[];
+  testRunItems: TestRunItem[];
+  exploratorySessions: ExploratorySession[];
   preferences: Record<string, string>;
 }
 
@@ -45,6 +85,16 @@ function createInitialMemoryStore(): MemoryStore {
     })),
     bugs: [],
     attachments: [],
+    testCases: [],
+    checklists: DEFAULT_CHECKLISTS_SEED.map((chk) => ({
+      ...chk,
+      test_case_ids: [],
+      created_at: now,
+      updated_at: now,
+    })),
+    testRuns: [],
+    testRunItems: [],
+    exploratorySessions: [],
     preferences: { theme: 'dark' },
   };
 }
@@ -93,13 +143,28 @@ async function getSqliteDb(): Promise<Database> {
       const existingCols = await db.select<Array<{ count: number }>>(
         'SELECT COUNT(*) as count FROM board_columns',
       );
-      const count = Number(existingCols[0]?.count ?? 0);
-      if (count === 0) {
+      const colCount = Number(existingCols[0]?.count ?? 0);
+      if (colCount === 0) {
         const now = new Date().toISOString();
         for (const col of DEFAULT_BOARD_COLUMNS) {
           await db.execute(
             'INSERT INTO board_columns (id, name, position, is_done_column, created_at) VALUES ($1, $2, $3, $4, $5)',
             [col.id, col.name, col.position, col.is_done_column ? 1 : 0, now],
+          );
+        }
+      }
+
+      // Seed default reusable checklists (Smoke, Regressão, Pré-Release) if checklists is empty
+      const existingChecklists = await db.select<Array<{ count: number }>>(
+        'SELECT COUNT(*) as count FROM checklists',
+      );
+      const chkCount = Number(existingChecklists[0]?.count ?? 0);
+      if (chkCount === 0) {
+        const now = new Date().toISOString();
+        for (const chk of DEFAULT_CHECKLISTS_SEED) {
+          await db.execute(
+            'INSERT INTO checklists (id, name, category, description, test_case_ids_json, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+            [chk.id, chk.name, chk.category, chk.description, '[]', now, now],
           );
         }
       }
@@ -257,16 +322,19 @@ interface RawBugRow {
   updated_at: string;
 }
 
-function mapRawBug(row: RawBugRow): BugCard {
-  let tags: string[] = [];
+function parseJsonArray(jsonStr: string): string[] {
   try {
-    const parsed = JSON.parse(row.tags_json || '[]');
+    const parsed = JSON.parse(jsonStr || '[]');
     if (Array.isArray(parsed)) {
-      tags = parsed.map((t) => String(t));
+      return parsed.map((t) => String(t));
     }
   } catch {
-    tags = [];
+    // fallback
   }
+  return [];
+}
+
+function mapRawBug(row: RawBugRow): BugCard {
   return {
     id: row.id,
     column_id: row.column_id,
@@ -277,7 +345,7 @@ function mapRawBug(row: RawBugRow): BugCard {
     environment: row.environment || '',
     build_version: row.build_version || '',
     module: row.module || '',
-    tags,
+    tags: parseJsonArray(row.tags_json),
     steps_to_reproduce: row.steps_to_reproduce || '',
     expected_result: row.expected_result || '',
     actual_result: row.actual_result || '',
@@ -499,9 +567,6 @@ export async function updateBug(bugId: string, input: Partial<BugInput>): Promis
   return updated;
 }
 
-/**
- * Moves a bug to a target column and persists the new ordered positions of bugs in affected columns.
- */
 export async function moveAndReorderBug(
   bugId: string,
   targetColumnId: string,
@@ -613,6 +678,672 @@ export function filterBugs(bugs: BugCard[], filters: BugFilters): BugCard[] {
     }
     return true;
   });
+}
+
+// ============================================================================
+// Phase 2: Test Cases Library CRUD
+// ============================================================================
+interface RawTestCaseRow {
+  id: string;
+  title: string;
+  module: string;
+  tags_json: string;
+  preconditions: string;
+  steps: string;
+  expected_result: string;
+  priority: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapRawTestCase(row: RawTestCaseRow): TestCase {
+  return {
+    id: row.id,
+    title: row.title,
+    module: row.module || '',
+    tags: parseJsonArray(row.tags_json),
+    preconditions: row.preconditions || '',
+    steps: row.steps || '',
+    expected_result: row.expected_result || '',
+    priority: (row.priority as BugPriority) || 'P3 - Média',
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export async function listTestCases(): Promise<TestCase[]> {
+  if (!isTauriRuntime()) {
+    return [...memoryStore.testCases].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+  const db = await getSqliteDb();
+  const rows = await db.select<RawTestCaseRow[]>(
+    'SELECT * FROM test_cases ORDER BY created_at DESC',
+  );
+  return rows.map(mapRawTestCase);
+}
+
+export async function createTestCase(input: TestCaseInput): Promise<TestCase> {
+  const title = input.title.trim();
+  if (!title) {
+    throw new Error('O título do caso de teste é obrigatório.');
+  }
+  const now = new Date().toISOString();
+  const tc: TestCase = {
+    id: createId('tc'),
+    title,
+    module: input.module.trim(),
+    tags: input.tags.map((t) => t.trim()).filter(Boolean),
+    preconditions: input.preconditions.trim(),
+    steps: input.steps.trim(),
+    expected_result: input.expected_result.trim(),
+    priority: input.priority,
+    created_at: now,
+    updated_at: now,
+  };
+
+  if (!isTauriRuntime()) {
+    memoryStore.testCases.push(tc);
+    return tc;
+  }
+
+  const db = await getSqliteDb();
+  await db.execute(
+    `INSERT INTO test_cases (
+      id, title, module, tags_json, preconditions, steps, expected_result, priority, created_at, updated_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [
+      tc.id,
+      tc.title,
+      tc.module,
+      JSON.stringify(tc.tags),
+      tc.preconditions,
+      tc.steps,
+      tc.expected_result,
+      tc.priority,
+      tc.created_at,
+      tc.updated_at,
+    ],
+  );
+  return tc;
+}
+
+export async function updateTestCase(
+  testCaseId: string,
+  input: Partial<TestCaseInput>,
+): Promise<TestCase> {
+  const all = await listTestCases();
+  const existing = all.find((c) => c.id === testCaseId);
+  if (!existing) {
+    throw new Error('Caso de teste não encontrado.');
+  }
+  const now = new Date().toISOString();
+  const updated: TestCase = {
+    ...existing,
+    title: input.title !== undefined ? input.title.trim() : existing.title,
+    module: input.module !== undefined ? input.module.trim() : existing.module,
+    tags:
+      input.tags !== undefined ? input.tags.map((t) => t.trim()).filter(Boolean) : existing.tags,
+    preconditions:
+      input.preconditions !== undefined ? input.preconditions.trim() : existing.preconditions,
+    steps: input.steps !== undefined ? input.steps.trim() : existing.steps,
+    expected_result:
+      input.expected_result !== undefined ? input.expected_result.trim() : existing.expected_result,
+    priority: input.priority ?? existing.priority,
+    updated_at: now,
+  };
+
+  if (!updated.title) {
+    throw new Error('O título do caso de teste é obrigatório.');
+  }
+
+  if (!isTauriRuntime()) {
+    const idx = memoryStore.testCases.findIndex((c) => c.id === testCaseId);
+    if (idx >= 0) {
+      memoryStore.testCases[idx] = updated;
+    }
+    return updated;
+  }
+
+  const db = await getSqliteDb();
+  await db.execute(
+    `UPDATE test_cases SET
+      title = $1, module = $2, tags_json = $3, preconditions = $4,
+      steps = $5, expected_result = $6, priority = $7, updated_at = $8
+    WHERE id = $9`,
+    [
+      updated.title,
+      updated.module,
+      JSON.stringify(updated.tags),
+      updated.preconditions,
+      updated.steps,
+      updated.expected_result,
+      updated.priority,
+      updated.updated_at,
+      updated.id,
+    ],
+  );
+  return updated;
+}
+
+export async function deleteTestCase(testCaseId: string): Promise<void> {
+  if (!isTauriRuntime()) {
+    memoryStore.testCases = memoryStore.testCases.filter((c) => c.id !== testCaseId);
+    memoryStore.checklists = memoryStore.checklists.map((chk) => ({
+      ...chk,
+      test_case_ids: chk.test_case_ids.filter((id) => id !== testCaseId),
+    }));
+    return;
+  }
+  const db = await getSqliteDb();
+  await db.execute('DELETE FROM test_cases WHERE id = $1', [testCaseId]);
+}
+
+// ============================================================================
+// Phase 2: Reusable Checklists / Templates (Smoke, Regressão, Pré-Release)
+// ============================================================================
+interface RawChecklistRow {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  test_case_ids_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapRawChecklist(row: RawChecklistRow): ChecklistTemplate {
+  return {
+    id: row.id,
+    name: row.name,
+    category: (row.category as ChecklistCategory) || 'Smoke',
+    description: row.description || '',
+    test_case_ids: parseJsonArray(row.test_case_ids_json),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export async function listChecklists(): Promise<ChecklistTemplate[]> {
+  if (!isTauriRuntime()) {
+    return [...memoryStore.checklists];
+  }
+  const db = await getSqliteDb();
+  const rows = await db.select<RawChecklistRow[]>(
+    'SELECT * FROM checklists ORDER BY created_at ASC',
+  );
+  return rows.map(mapRawChecklist);
+}
+
+export async function createChecklist(input: ChecklistInput): Promise<ChecklistTemplate> {
+  const name = input.name.trim();
+  if (!name) {
+    throw new Error('O nome do checklist é obrigatório.');
+  }
+  const now = new Date().toISOString();
+  const chk: ChecklistTemplate = {
+    id: createId('chk'),
+    name,
+    category: input.category,
+    description: input.description.trim(),
+    test_case_ids: [...new Set(input.test_case_ids)],
+    created_at: now,
+    updated_at: now,
+  };
+
+  if (!isTauriRuntime()) {
+    memoryStore.checklists.push(chk);
+    return chk;
+  }
+
+  const db = await getSqliteDb();
+  await db.execute(
+    `INSERT INTO checklists (
+      id, name, category, description, test_case_ids_json, created_at, updated_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [
+      chk.id,
+      chk.name,
+      chk.category,
+      chk.description,
+      JSON.stringify(chk.test_case_ids),
+      chk.created_at,
+      chk.updated_at,
+    ],
+  );
+  return chk;
+}
+
+export async function updateChecklist(
+  checklistId: string,
+  input: Partial<ChecklistInput>,
+): Promise<ChecklistTemplate> {
+  const all = await listChecklists();
+  const existing = all.find((c) => c.id === checklistId);
+  if (!existing) {
+    throw new Error('Checklist não encontrado.');
+  }
+  const now = new Date().toISOString();
+  const updated: ChecklistTemplate = {
+    ...existing,
+    name: input.name !== undefined ? input.name.trim() : existing.name,
+    category: input.category ?? existing.category,
+    description: input.description !== undefined ? input.description.trim() : existing.description,
+    test_case_ids:
+      input.test_case_ids !== undefined
+        ? [...new Set(input.test_case_ids)]
+        : existing.test_case_ids,
+    updated_at: now,
+  };
+
+  if (!updated.name) {
+    throw new Error('O nome do checklist é obrigatório.');
+  }
+
+  if (!isTauriRuntime()) {
+    const idx = memoryStore.checklists.findIndex((c) => c.id === checklistId);
+    if (idx >= 0) {
+      memoryStore.checklists[idx] = updated;
+    }
+    return updated;
+  }
+
+  const db = await getSqliteDb();
+  await db.execute(
+    `UPDATE checklists SET
+      name = $1, category = $2, description = $3, test_case_ids_json = $4, updated_at = $5
+    WHERE id = $6`,
+    [
+      updated.name,
+      updated.category,
+      updated.description,
+      JSON.stringify(updated.test_case_ids),
+      updated.updated_at,
+      updated.id,
+    ],
+  );
+  return updated;
+}
+
+export async function deleteChecklist(checklistId: string): Promise<void> {
+  if (!isTauriRuntime()) {
+    memoryStore.checklists = memoryStore.checklists.filter((c) => c.id !== checklistId);
+    return;
+  }
+  const db = await getSqliteDb();
+  await db.execute('DELETE FROM checklists WHERE id = $1', [checklistId]);
+}
+
+// ============================================================================
+// Phase 2: Test Runs & Test Run Items + Generate Bug from Failure
+// ============================================================================
+export async function listTestRuns(): Promise<TestRun[]> {
+  if (!isTauriRuntime()) {
+    return [...memoryStore.testRuns].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+  const db = await getSqliteDb();
+  return db.select<TestRun[]>('SELECT * FROM test_runs ORDER BY created_at DESC');
+}
+
+export async function listTestRunItems(runId: string): Promise<TestRunItem[]> {
+  if (!isTauriRuntime()) {
+    return memoryStore.testRunItems.filter((item) => item.run_id === runId);
+  }
+  const db = await getSqliteDb();
+  return db.select<TestRunItem[]>(
+    'SELECT * FROM test_run_items WHERE run_id = $1 ORDER BY id ASC',
+    [runId],
+  );
+}
+
+export async function listAllTestRunItems(): Promise<TestRunItem[]> {
+  if (!isTauriRuntime()) {
+    return [...memoryStore.testRunItems];
+  }
+  const db = await getSqliteDb();
+  return db.select<TestRunItem[]>('SELECT * FROM test_run_items ORDER BY id ASC');
+}
+
+export async function createTestRun(input: TestRunInput): Promise<TestRun> {
+  const name = input.name.trim();
+  if (!name) {
+    throw new Error('O nome da execução (Test Run) é obrigatório.');
+  }
+  if (input.test_case_ids.length === 0) {
+    throw new Error('Selecione pelo menos um caso de teste para criar a execução.');
+  }
+
+  const allCases = await listTestCases();
+  const selectedCases = input.test_case_ids
+    .map((id) => allCases.find((tc) => tc.id === id))
+    .filter((tc): tc is TestCase => Boolean(tc));
+
+  if (selectedCases.length === 0) {
+    throw new Error('Nenhum caso de teste válido encontrado para esta execução.');
+  }
+
+  const now = new Date().toISOString();
+  const run: TestRun = {
+    id: createId('run'),
+    name,
+    build_version: input.build_version.trim(),
+    environment: input.environment.trim(),
+    checklist_id: input.checklist_id ?? null,
+    created_at: now,
+    updated_at: now,
+  };
+
+  const runItems: TestRunItem[] = selectedCases.map((tc, index) => ({
+    id: `${createId('runitem')}-${index}`,
+    run_id: run.id,
+    test_case_id: tc.id,
+    title: tc.title,
+    module: tc.module,
+    priority: tc.priority,
+    preconditions: tc.preconditions,
+    steps: tc.steps,
+    expected_result: tc.expected_result,
+    status: 'Pendente',
+    notes: '',
+    created_bug_id: null,
+    executed_at: null,
+  }));
+
+  if (!isTauriRuntime()) {
+    memoryStore.testRuns.push(run);
+    memoryStore.testRunItems.push(...runItems);
+    return run;
+  }
+
+  const db = await getSqliteDb();
+  await db.execute(
+    `INSERT INTO test_runs (
+      id, name, build_version, environment, checklist_id, created_at, updated_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [
+      run.id,
+      run.name,
+      run.build_version,
+      run.environment,
+      run.checklist_id,
+      run.created_at,
+      run.updated_at,
+    ],
+  );
+
+  for (const item of runItems) {
+    await db.execute(
+      `INSERT INTO test_run_items (
+        id, run_id, test_case_id, title, module, priority, preconditions,
+        steps, expected_result, status, notes, created_bug_id, executed_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      [
+        item.id,
+        item.run_id,
+        item.test_case_id,
+        item.title,
+        item.module,
+        item.priority,
+        item.preconditions,
+        item.steps,
+        item.expected_result,
+        item.status,
+        item.notes,
+        item.created_bug_id,
+        item.executed_at,
+      ],
+    );
+  }
+
+  return run;
+}
+
+export async function updateTestRunItem(
+  itemId: string,
+  updates: {
+    status?: TestRunItemStatus;
+    notes?: string;
+    created_bug_id?: string | null;
+  },
+): Promise<TestRunItem> {
+  const allItems = await listAllTestRunItems();
+  const existing = allItems.find((i) => i.id === itemId);
+  if (!existing) {
+    throw new Error('Item da execução não encontrado.');
+  }
+
+  const now = new Date().toISOString();
+  const updated: TestRunItem = {
+    ...existing,
+    status: updates.status ?? existing.status,
+    notes: updates.notes !== undefined ? updates.notes : existing.notes,
+    created_bug_id:
+      updates.created_bug_id !== undefined ? updates.created_bug_id : existing.created_bug_id,
+    executed_at: updates.status && updates.status !== 'Pendente' ? now : existing.executed_at,
+  };
+
+  if (!isTauriRuntime()) {
+    const idx = memoryStore.testRunItems.findIndex((i) => i.id === itemId);
+    if (idx >= 0) {
+      memoryStore.testRunItems[idx] = updated;
+    }
+    const run = memoryStore.testRuns.find((r) => r.id === existing.run_id);
+    if (run) {
+      run.updated_at = now;
+    }
+    return updated;
+  }
+
+  const db = await getSqliteDb();
+  await db.execute(
+    `UPDATE test_run_items SET
+      status = $1, notes = $2, created_bug_id = $3, executed_at = $4
+    WHERE id = $5`,
+    [updated.status, updated.notes, updated.created_bug_id, updated.executed_at, updated.id],
+  );
+  await db.execute('UPDATE test_runs SET updated_at = $1 WHERE id = $2', [now, existing.run_id]);
+  return updated;
+}
+
+export async function deleteTestRun(runId: string): Promise<void> {
+  const items = await listTestRunItems(runId);
+  for (const item of items) {
+    const atts = await listAttachmentsForParent('run_item', item.id);
+    for (const att of atts) {
+      await deleteAttachment(att.id);
+    }
+  }
+
+  if (!isTauriRuntime()) {
+    memoryStore.testRunItems = memoryStore.testRunItems.filter((i) => i.run_id !== runId);
+    memoryStore.testRuns = memoryStore.testRuns.filter((r) => r.id !== runId);
+    return;
+  }
+
+  const db = await getSqliteDb();
+  await db.execute('DELETE FROM test_run_items WHERE run_id = $1', [runId]);
+  await db.execute('DELETE FROM test_runs WHERE id = $1', [runId]);
+}
+
+/**
+ * Generates a Bug card pre-filled with the TestRun and TestRunItem data,
+ * copies any attachments from the failed run item to the new bug, and links the bug ID.
+ */
+export async function generateBugFromRunItem(
+  run: TestRun,
+  item: TestRunItem,
+  overrideSeverity?: BugSeverity,
+): Promise<BugCard> {
+  const cols = await listColumns();
+  const firstColId = cols[0]?.id || 'col-new';
+
+  const severityMap: Record<BugPriority, BugSeverity> = {
+    'P1 - Urgente': 'Crítica',
+    'P2 - Alta': 'Alta',
+    'P3 - Média': 'Média',
+    'P4 - Baixa': 'Baixa',
+  };
+
+  const createdBug = await createBug({
+    column_id: firstColId,
+    title: `[Falha em Execução] ${item.title}`,
+    severity: overrideSeverity || severityMap[item.priority] || 'Alta',
+    priority: item.priority,
+    environment: run.environment,
+    build_version: run.build_version,
+    module: item.module,
+    tags: ['test-run', run.name],
+    steps_to_reproduce: item.preconditions
+      ? `Pré-condições:\n${item.preconditions}\n\nPassos:\n${item.steps}`
+      : item.steps,
+    expected_result: item.expected_result,
+    actual_result: item.notes.trim() || `Caso de teste falhou durante a execução "${run.name}".`,
+    external_ticket_url: '',
+    test_run_item_id: item.id,
+  });
+
+  // Copy attachments from the run item to the newly created bug
+  const itemAtts = await listAttachmentsForParent('run_item', item.id);
+  for (const att of itemAtts) {
+    try {
+      const dataUrl = await getAttachmentDataUrl(att);
+      const commaIdx = dataUrl.indexOf(',');
+      const b64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+      await saveAttachmentForParent({
+        parentType: 'bug',
+        parentId: createdBug.id,
+        fileName: att.file_name,
+        mimeType: att.mime_type,
+        base64Data: b64,
+      });
+    } catch {
+      // Ignore attachment copy failure
+    }
+  }
+
+  await updateTestRunItem(item.id, { created_bug_id: createdBug.id });
+  return createdBug;
+}
+
+// ============================================================================
+// Phase 2: Exploratory Testing Sessions (Charter, Timer, Quick Notes, Session Bugs)
+// ============================================================================
+export async function listExploratorySessions(): Promise<ExploratorySession[]> {
+  if (!isTauriRuntime()) {
+    return [...memoryStore.exploratorySessions].sort((a, b) =>
+      b.created_at.localeCompare(a.created_at),
+    );
+  }
+  const db = await getSqliteDb();
+  return db.select<ExploratorySession[]>(
+    'SELECT * FROM exploratory_sessions ORDER BY created_at DESC',
+  );
+}
+
+export async function createExploratorySession(
+  input: ExploratorySessionInput,
+): Promise<ExploratorySession> {
+  const charter = input.charter.trim();
+  if (!charter) {
+    throw new Error('A missão (charter) da sessão exploratória é obrigatória.');
+  }
+  const now = new Date().toISOString();
+  const session: ExploratorySession = {
+    id: createId('exp'),
+    charter,
+    environment: input.environment.trim(),
+    build_version: input.build_version.trim(),
+    module: input.module.trim(),
+    notes: input.notes.trim(),
+    duration_seconds: input.duration_seconds ?? 0,
+    created_at: now,
+    updated_at: now,
+  };
+
+  if (!isTauriRuntime()) {
+    memoryStore.exploratorySessions.push(session);
+    return session;
+  }
+
+  const db = await getSqliteDb();
+  await db.execute(
+    `INSERT INTO exploratory_sessions (
+      id, charter, environment, build_version, module, notes, duration_seconds, created_at, updated_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [
+      session.id,
+      session.charter,
+      session.environment,
+      session.build_version,
+      session.module,
+      session.notes,
+      session.duration_seconds,
+      session.created_at,
+      session.updated_at,
+    ],
+  );
+  return session;
+}
+
+export async function updateExploratorySession(
+  sessionId: string,
+  input: Partial<ExploratorySessionInput>,
+): Promise<ExploratorySession> {
+  const all = await listExploratorySessions();
+  const existing = all.find((s) => s.id === sessionId);
+  if (!existing) {
+    throw new Error('Sessão exploratória não encontrada.');
+  }
+  const now = new Date().toISOString();
+  const updated: ExploratorySession = {
+    ...existing,
+    charter: input.charter !== undefined ? input.charter.trim() : existing.charter,
+    environment: input.environment !== undefined ? input.environment.trim() : existing.environment,
+    build_version:
+      input.build_version !== undefined ? input.build_version.trim() : existing.build_version,
+    module: input.module !== undefined ? input.module.trim() : existing.module,
+    notes: input.notes !== undefined ? input.notes : existing.notes,
+    duration_seconds:
+      input.duration_seconds !== undefined ? input.duration_seconds : existing.duration_seconds,
+    updated_at: now,
+  };
+
+  if (!isTauriRuntime()) {
+    const idx = memoryStore.exploratorySessions.findIndex((s) => s.id === sessionId);
+    if (idx >= 0) {
+      memoryStore.exploratorySessions[idx] = updated;
+    }
+    return updated;
+  }
+
+  const db = await getSqliteDb();
+  await db.execute(
+    `UPDATE exploratory_sessions SET
+      charter = $1, environment = $2, build_version = $3, module = $4,
+      notes = $5, duration_seconds = $6, updated_at = $7
+    WHERE id = $8`,
+    [
+      updated.charter,
+      updated.environment,
+      updated.build_version,
+      updated.module,
+      updated.notes,
+      updated.duration_seconds,
+      updated.updated_at,
+      updated.id,
+    ],
+  );
+  return updated;
+}
+
+export async function deleteExploratorySession(sessionId: string): Promise<void> {
+  if (!isTauriRuntime()) {
+    memoryStore.exploratorySessions = memoryStore.exploratorySessions.filter(
+      (s) => s.id !== sessionId,
+    );
+    return;
+  }
+  const db = await getSqliteDb();
+  await db.execute('DELETE FROM exploratory_sessions WHERE id = $1', [sessionId]);
 }
 
 // ============================================================================
@@ -782,24 +1513,51 @@ export function validateBackupPayload(data: unknown): BackupPayload {
     columns: candidate.columns,
     bugs: candidate.bugs,
     attachments: candidate.attachments,
+    test_cases: Array.isArray(candidate.test_cases) ? candidate.test_cases : [],
+    checklists: Array.isArray(candidate.checklists) ? candidate.checklists : [],
+    test_runs: Array.isArray(candidate.test_runs) ? candidate.test_runs : [],
+    test_run_items: Array.isArray(candidate.test_run_items) ? candidate.test_run_items : [],
+    exploratory_sessions: Array.isArray(candidate.exploratory_sessions)
+      ? candidate.exploratory_sessions
+      : [],
   };
 }
 
 export async function buildBackupPayload(): Promise<BackupPayload> {
-  const [theme, columns, bugs, attachments] = await Promise.all([
+  const [
+    theme,
+    columns,
+    bugs,
+    attachments,
+    test_cases,
+    checklists,
+    test_runs,
+    test_run_items,
+    exploratory_sessions,
+  ] = await Promise.all([
     getThemePreference(),
     listColumns(),
     listBugs(),
     listAllAttachments(),
+    listTestCases(),
+    listChecklists(),
+    listTestRuns(),
+    listAllTestRunItems(),
+    listExploratorySessions(),
   ]);
 
   return {
-    version: 1,
+    version: 2,
     exported_at: new Date().toISOString(),
     theme,
     columns,
     bugs,
     attachments,
+    test_cases,
+    checklists,
+    test_runs,
+    test_run_items,
+    exploratory_sessions,
   };
 }
 
@@ -811,6 +1569,25 @@ export async function restoreFromBackupPayload(payload: BackupPayload): Promise<
       columns: validated.columns.map((c) => ({ ...c })),
       bugs: validated.bugs.map((b) => ({ ...b, tags: [...(b.tags || [])] })),
       attachments: validated.attachments.map((a) => ({ ...a })),
+      testCases: (validated.test_cases || []).map((tc) => ({
+        ...tc,
+        tags: [...(tc.tags || [])],
+      })),
+      checklists:
+        validated.checklists && validated.checklists.length > 0
+          ? validated.checklists.map((chk) => ({
+              ...chk,
+              test_case_ids: [...(chk.test_case_ids || [])],
+            }))
+          : DEFAULT_CHECKLISTS_SEED.map((chk) => ({
+              ...chk,
+              test_case_ids: [],
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })),
+      testRuns: (validated.test_runs || []).map((r) => ({ ...r })),
+      testRunItems: (validated.test_run_items || []).map((i) => ({ ...i })),
+      exploratorySessions: (validated.exploratory_sessions || []).map((s) => ({ ...s })),
       preferences: { theme: validated.theme },
     };
     return;
@@ -818,6 +1595,11 @@ export async function restoreFromBackupPayload(payload: BackupPayload): Promise<
 
   const db = await getSqliteDb();
   await db.execute('DELETE FROM attachments');
+  await db.execute('DELETE FROM test_run_items');
+  await db.execute('DELETE FROM test_runs');
+  await db.execute('DELETE FROM checklists');
+  await db.execute('DELETE FROM test_cases');
+  await db.execute('DELETE FROM exploratory_sessions');
   await db.execute('DELETE FROM bugs');
   await db.execute('DELETE FROM board_columns');
 
@@ -864,6 +1646,103 @@ export async function restoreFromBackupPayload(payload: BackupPayload): Promise<
         bug.exploratory_session_id ?? null,
         bug.created_at,
         bug.updated_at,
+      ],
+    );
+  }
+
+  for (const tc of validated.test_cases || []) {
+    await db.execute(
+      `INSERT INTO test_cases (
+        id, title, module, tags_json, preconditions, steps, expected_result, priority, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        tc.id,
+        tc.title,
+        tc.module || '',
+        JSON.stringify(tc.tags || []),
+        tc.preconditions || '',
+        tc.steps || '',
+        tc.expected_result || '',
+        tc.priority,
+        tc.created_at,
+        tc.updated_at,
+      ],
+    );
+  }
+
+  for (const chk of validated.checklists || []) {
+    await db.execute(
+      `INSERT INTO checklists (
+        id, name, category, description, test_case_ids_json, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        chk.id,
+        chk.name,
+        chk.category,
+        chk.description || '',
+        JSON.stringify(chk.test_case_ids || []),
+        chk.created_at,
+        chk.updated_at,
+      ],
+    );
+  }
+
+  for (const run of validated.test_runs || []) {
+    await db.execute(
+      `INSERT INTO test_runs (
+        id, name, build_version, environment, checklist_id, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        run.id,
+        run.name,
+        run.build_version || '',
+        run.environment || '',
+        run.checklist_id ?? null,
+        run.created_at,
+        run.updated_at,
+      ],
+    );
+  }
+
+  for (const item of validated.test_run_items || []) {
+    await db.execute(
+      `INSERT INTO test_run_items (
+        id, run_id, test_case_id, title, module, priority, preconditions,
+        steps, expected_result, status, notes, created_bug_id, executed_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      [
+        item.id,
+        item.run_id,
+        item.test_case_id,
+        item.title,
+        item.module || '',
+        item.priority,
+        item.preconditions || '',
+        item.steps || '',
+        item.expected_result || '',
+        item.status,
+        item.notes || '',
+        item.created_bug_id ?? null,
+        item.executed_at ?? null,
+      ],
+    );
+  }
+
+  for (const session of validated.exploratory_sessions || []) {
+    await db.execute(
+      `INSERT INTO exploratory_sessions (
+        id, charter, environment, build_version, module, notes, duration_seconds, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        session.id,
+        session.charter,
+        session.environment || '',
+        session.build_version || '',
+        session.module || '',
+        session.notes || '',
+        session.duration_seconds || 0,
+        session.created_at,
+        session.updated_at,
       ],
     );
   }

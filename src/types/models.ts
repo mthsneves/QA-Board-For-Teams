@@ -4,6 +4,10 @@ export type BugPriority = 'P1 - Urgente' | 'P2 - Alta' | 'P3 - Média' | 'P4 - B
 
 export type ThemeMode = 'dark' | 'light';
 
+export type TestRunItemStatus = 'Pendente' | 'Passou' | 'Falhou' | 'Bloqueado' | 'Pulado';
+
+export type ChecklistCategory = 'Smoke' | 'Regressão' | 'Pré-Release' | 'Personalizado';
+
 export interface BoardColumn {
   id: string;
   name: string;
@@ -79,6 +83,101 @@ export interface BugFilters {
   buildVersion: string;
 }
 
+export interface TestCase {
+  id: string;
+  title: string;
+  module: string;
+  tags: string[];
+  preconditions: string;
+  steps: string;
+  expected_result: string;
+  priority: BugPriority;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TestCaseInput {
+  title: string;
+  module: string;
+  tags: string[];
+  preconditions: string;
+  steps: string;
+  expected_result: string;
+  priority: BugPriority;
+}
+
+export interface ChecklistTemplate {
+  id: string;
+  name: string;
+  category: ChecklistCategory;
+  description: string;
+  test_case_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChecklistInput {
+  name: string;
+  category: ChecklistCategory;
+  description: string;
+  test_case_ids: string[];
+}
+
+export interface TestRunItem {
+  id: string;
+  run_id: string;
+  test_case_id: string;
+  title: string;
+  module: string;
+  priority: BugPriority;
+  preconditions: string;
+  steps: string;
+  expected_result: string;
+  status: TestRunItemStatus;
+  notes: string;
+  created_bug_id: string | null;
+  executed_at: string | null;
+}
+
+export interface TestRun {
+  id: string;
+  name: string;
+  build_version: string;
+  environment: string;
+  checklist_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TestRunInput {
+  name: string;
+  build_version: string;
+  environment: string;
+  checklist_id?: string | null;
+  test_case_ids: string[];
+}
+
+export interface ExploratorySession {
+  id: string;
+  charter: string;
+  environment: string;
+  build_version: string;
+  module: string;
+  notes: string;
+  duration_seconds: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExploratorySessionInput {
+  charter: string;
+  environment: string;
+  build_version: string;
+  module: string;
+  notes: string;
+  duration_seconds?: number;
+}
+
 export interface BackupPayload {
   version: number;
   exported_at: string;
@@ -86,6 +185,11 @@ export interface BackupPayload {
   columns: BoardColumn[];
   bugs: BugCard[];
   attachments: AttachmentRecord[];
+  test_cases?: TestCase[];
+  checklists?: ChecklistTemplate[];
+  test_runs?: TestRun[];
+  test_run_items?: TestRunItem[];
+  exploratory_sessions?: ExploratorySession[];
 }
 
 export const DEFAULT_BOARD_COLUMNS: Array<
@@ -106,4 +210,19 @@ export const PRIORITY_OPTIONS: BugPriority[] = [
   'P2 - Alta',
   'P3 - Média',
   'P4 - Baixa',
+];
+
+export const RUN_STATUS_OPTIONS: TestRunItemStatus[] = [
+  'Pendente',
+  'Passou',
+  'Falhou',
+  'Bloqueado',
+  'Pulado',
+];
+
+export const CHECKLIST_CATEGORIES: ChecklistCategory[] = [
+  'Smoke',
+  'Regressão',
+  'Pré-Release',
+  'Personalizado',
 ];

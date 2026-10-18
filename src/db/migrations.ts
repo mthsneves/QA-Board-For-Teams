@@ -57,4 +57,67 @@ export const MIGRATIONS: Migration[] = [
       );`,
     ],
   },
+  {
+    version: 2,
+    name: 'v2_test_cases_checklists_runs_exploratory_sessions',
+    statements: [
+      `CREATE TABLE IF NOT EXISTS test_cases (
+        id TEXT PRIMARY KEY NOT NULL,
+        title TEXT NOT NULL,
+        module TEXT NOT NULL DEFAULT '',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        preconditions TEXT NOT NULL DEFAULT '',
+        steps TEXT NOT NULL DEFAULT '',
+        expected_result TEXT NOT NULL DEFAULT '',
+        priority TEXT NOT NULL DEFAULT 'P3 - Média',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );`,
+      `CREATE TABLE IF NOT EXISTS checklists (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'Smoke',
+        description TEXT NOT NULL DEFAULT '',
+        test_case_ids_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );`,
+      `CREATE TABLE IF NOT EXISTS test_runs (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL,
+        build_version TEXT NOT NULL DEFAULT '',
+        environment TEXT NOT NULL DEFAULT '',
+        checklist_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );`,
+      `CREATE TABLE IF NOT EXISTS test_run_items (
+        id TEXT PRIMARY KEY NOT NULL,
+        run_id TEXT NOT NULL,
+        test_case_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        module TEXT NOT NULL DEFAULT '',
+        priority TEXT NOT NULL DEFAULT 'P3 - Média',
+        preconditions TEXT NOT NULL DEFAULT '',
+        steps TEXT NOT NULL DEFAULT '',
+        expected_result TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'Pendente',
+        notes TEXT NOT NULL DEFAULT '',
+        created_bug_id TEXT,
+        executed_at TEXT,
+        FOREIGN KEY (run_id) REFERENCES test_runs(id) ON DELETE CASCADE
+      );`,
+      `CREATE TABLE IF NOT EXISTS exploratory_sessions (
+        id TEXT PRIMARY KEY NOT NULL,
+        charter TEXT NOT NULL,
+        environment TEXT NOT NULL DEFAULT '',
+        build_version TEXT NOT NULL DEFAULT '',
+        module TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        duration_seconds INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );`,
+    ],
+  },
 ];
